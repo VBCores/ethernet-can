@@ -1,6 +1,10 @@
 ## Ethernet-CAN board
 
 
+http://vbcores.com/products/ethernet-can
+
+
+![Ethernet-CAN](./extra/images/ethernet-can.png)
 
 ### Build and Install
 
