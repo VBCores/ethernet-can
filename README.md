@@ -6,6 +6,13 @@ http://vbcores.com/products/ethernet-can
 
 ![Ethernet-CAN](./extra/images/ethernet-can.png)
 
+### Configure board
+
+You need any SD-Card, format it to ```FAT16```
+
+Write to root dir ```ethernet.ini``` file. See [example](./extra/SD-card/ethernet.ini) file.
+
+
 ### Build and Install
 
 You need clone git repo with submodules.
