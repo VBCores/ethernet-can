@@ -30,8 +30,6 @@ using namespace std;
 
 typedef struct
 {
-  uint32_t magic_number;
-  uint8_t bus_num;
   uint16_t nominal_baudrate;
   uint16_t data_baudrate;
 } FDCAN_PERIPH_PARAMS;
@@ -39,6 +37,7 @@ typedef struct
 typedef struct
 {
   uint32_t magic_number;
+  uint32_t frames_integration_period;
   FDCAN_PERIPH_PARAMS bus[6];
 } DEVICE_FDCAN_CONFIG;
 
@@ -323,12 +322,10 @@ int main(int argc, char* argv[])
 	}
 	
 	sosiska.magic_number = 0x9a0a6ac6;
+	sosiska.frames_integration_period = frames_integration_period;
 	
 	for( int i = 0; i < 6; i++ )
 	{
-		sosiska.bus[i].magic_number = 0x9a0a6ac6;
-		sosiska.bus[i].bus_num = i;
-		
 		if( can_sockets[i] >= 0 )
 		{
 			string sock_name = "vcan" + std::to_string(i);
