@@ -2,4 +2,12 @@
 
 Use STM32CubeProgrammer tools
 
-Connect [ST-Link](https://vbcores.tilda.ws/products/vb-stlink) to board into ```h7``` connector.
+You need [ST-Link](https://vbcores.tilda.ws/products/vb-stlink) for uploads.
+
+#### Upload .hex filses
+
+__ETH-723VE.hex__
+Connect to board into ```H7``` connector. 
+
+__STM32G4-SPI-CAN.hex__
+Connect to board into ```G4``` connector. 
