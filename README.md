@@ -12,6 +12,13 @@ You need any SD-Card, format it to ```FAT16```
 
 Write to root dir ```ethernet.ini``` file. See [example](./extra/SD-card/ethernet.ini) file.
 
+### Firmware
+
+Use STM32CubeProgrammer tools
+
+You need [ST-Link](https://vbcores.tilda.ws/products/vb-stlink) for uploads.
+
+Current binaries are located at https://github.com/VBCores/ETH-FDCAN_firmware 
 
 ### Build and Install
 
