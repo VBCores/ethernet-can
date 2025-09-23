@@ -68,18 +68,18 @@ bool getBit(unsigned char byte, int position) // position in range 0-7
 uint8_t write_can_frame(buffer_instance * s, uint8_t lcl_bus, uint32_t lcl_id, uint8_t data_length, uint8_t *data)
 {
 	uint8_t can_message_length = data_length + 5; // together with service bytes
-	
+
 	write_buffer(s, &can_message_length, 1); // write message length
-	
+
 	can_message_length -= 5; // 25 bytes with the service info
-	
+
 	uint8_t bus = lcl_bus;
 	uint32_t id = lcl_id;
 	uint32_t bus_id = encode_bus_id( bus, id );
-	
+
 	write_buffer(s, (uint8_t*)&bus_id, 4); // write bus id
 	write_buffer(s, data, can_message_length); // write message
-	
+
 	return 0;
 }
 
@@ -122,20 +122,20 @@ int main(int argc, char* argv[])
     if (!vm.count("config")) {
         std::cout << desc << "\n";
         return 0;
-    }	
+    }
 
     std::cout << "Config file: " << vm["config"].as<std::string>() << std::endl;
 
 	mINI::INIFile file(vm["config"].as<std::string>());
 	mINI::INIStructure ini;
 	file.read(ini);
-	
+
 	if( ini["DATA_ACQUIZITION"].has("Period") )
 	{
 		int value = std::stoi( ini.get("DATA_ACQUIZITION").get("Period") ); // convert string from config file to int
 		assert(value >= 0 && value < 1000000000);
 		frames_integration_period = value;
-		
+
 		if( value == 0 )
 		{
 			frame_integraion = false;
@@ -152,7 +152,7 @@ int main(int argc, char* argv[])
 	{
 		cout << "Failed to read update period from ini file" << endl;
 	}
-	
+
 	if( ini["NETWORK_PARAMS"].has("Host_IP_address") )
 	{
 		server_address = ini.get("NETWORK_PARAMS").get("Host_IP_address");
@@ -162,7 +162,7 @@ int main(int argc, char* argv[])
 	{
 		cout << "main: failed to read host IP-address from ini file" << endl;
 	}
-	
+
 	if( ini["NETWORK_PARAMS"].has("Device_IP_address") )
 	{
 		client_address = ini.get("NETWORK_PARAMS").get("Device_IP_address");
@@ -172,13 +172,13 @@ int main(int argc, char* argv[])
 	{
 		cout << "main: failed to read device IP-address from ini file" << endl;
 	}
-	
+
 	if( ini["FDCAN_PARAMS"].has("Enabled_buses") )
 	{
 		uint8_t value = std::stoi( ini.get("FDCAN_PARAMS").get("Enabled_buses"), nullptr, 2);
 		assert( value < 64 );
 		cout << "Enabled buses are:" << endl;
-		
+
 		for( int i = 0; i < 6; i++)
 		{
 			can_sockets[i] = getBit(value,5-i) - 1; // 1=>0; 0=>-1
@@ -192,33 +192,33 @@ int main(int argc, char* argv[])
 	{
 
 	}
-	
+
 	if( ini["FDCAN_PARAMS"].has("Nominal_baud") )
 	{
 		int value = std::stoi( ini.get("FDCAN_PARAMS").get("Nominal_baud") ); // convert string from config file to int
 		assert( value == 0 || value == 125 || value == 250 || value == 500 || value == 1000 );
 		nominal_baud = value;
-		
+
 		cout << "Nominal baudrate: " << value << endl;
 	}
 	else
 	{
 
 	}
-	
+
 	if( ini["FDCAN_PARAMS"].has("Data_baud") )
 	{
 		int value = std::stoi( ini.get("FDCAN_PARAMS").get("Data_baud") ); // convert string from config file to int
 		assert( value == 0 || value == 1000 || value == 2000 || value == 4000 || value == 8000 );
 		data_baud = value;
-		
+
 		cout << "Data baudrate: " << value << endl;
 	}
 	else
 	{
 
 	}
-	
+
 	if( nominal_baud && data_baud )
 	{
 		cout << "FDCAN with BRS is enabled" << endl;
@@ -232,16 +232,16 @@ int main(int argc, char* argv[])
 		cout << "Why do you want CAN disabled? Exiting" << endl;
 		exit(EXIT_FAILURE);
 	}
-	
+
 	cout << "Setup is complete!" << endl << endl;
-	
+
 	/// creating timer
 	if ( (tfd = timerfd_create(CLOCK_REALTIME,  0)) < 0 )
 	{
 		perror("timer creation failed");
 		exit(EXIT_FAILURE);
 	}
-	
+
 	// should frames be sent immediately upon arrival or periodically in batches?
 	if( frame_integraion )
 	{
@@ -249,54 +249,54 @@ int main(int argc, char* argv[])
 		timerValue.it_value.tv_nsec = frames_integration_period;
 		timerValue.it_interval.tv_sec = 0;
 		timerValue.it_interval.tv_nsec = frames_integration_period;
-		
+
 		timerfd_settime(tfd, 0, &timerValue, NULL);
 	}
-	
+
 	/// opening udp rx socket
-	
+
 	// Creating socket file descriptor
 	if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 )
 	{
 		perror("socket creation failed");
 		exit(EXIT_FAILURE);
 	}
-	
+
 	fcntl(sockfd, F_SETFL, O_NONBLOCK);
-	
+
 	// Filling server information
 	servaddr.sin_family    = AF_INET; // IPv4
 	servaddr.sin_addr.s_addr = inet_addr(server_address.c_str());
 	servaddr.sin_port = htons(SRV_PORT);
-	
+
 	// Filling client information
 	cliaddr.sin_family    = AF_INET; // IPv4
 	cliaddr.sin_addr.s_addr = inet_addr(client_address.c_str());
 	cliaddr.sin_port = htons(CLT_PORT);
-	
+
 	// Bind the socket with the server address
 	if ( bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0 )
 	{
 		perror("bind failed");
 		exit(EXIT_FAILURE);
 	}
-	
+
 	/// setup epoll
-	
+
 	struct epoll_event event;
 	struct epoll_event events[MAX_EVENTS];
-	
+
 	int epoll_fd = epoll_create1(0);
-	
+
 	if (epoll_fd == -1)
 	{
 		perror("epoll creation failed");
 		exit(EXIT_FAILURE);
-	}	
-	
-	event.events = EPOLLIN | EPOLLET;
+	}
+
+	event.events = EPOLLIN;
 	event.data.fd = tfd;
-	
+
 	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, tfd, &event))
 	{
 		close(epoll_fd);
@@ -307,9 +307,9 @@ int main(int argc, char* argv[])
 	{
 		cout << "Bound timer fd to epoll" << endl;
 	}
-	
+
 	event.data.fd = sockfd;
-	
+
 	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sockfd, &event))
 	{
 		close(epoll_fd);
@@ -320,17 +320,17 @@ int main(int argc, char* argv[])
 	{
 		cout << "Bound UDP socket to epoll" << endl;
 	}
-	
+
 	sosiska.magic_number = 0x9a0a6ac6;
 	sosiska.frames_integration_period = frames_integration_period;
-	
+
 	for( int i = 0; i < 6; i++ )
 	{
 		if( can_sockets[i] >= 0 )
 		{
 			string sock_name = "vcan" + std::to_string(i);
 			can_sockets[i] = canfd_init(sock_name.c_str(), true);
-			
+
 			if( can_sockets[i] < 0 )
 			{
 				string error_message = "Failed to open " + sock_name;
@@ -341,12 +341,12 @@ int main(int argc, char* argv[])
 			{
 				cout << "Opened " << sock_name << " socket" << endl;
 			}
-			
+
 			/////////////////////////////////////////////////////////
-			
+
 			event.events = EPOLLIN;// | EPOLLOUT | EPOLLET;
 			event.data.fd = can_sockets[i];
-			
+
 			if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, can_sockets[i], &event))
 			{
 				close(epoll_fd);
@@ -357,12 +357,12 @@ int main(int argc, char* argv[])
 			{
 				cout << "Bound " << sock_name << " socket to epoll" << endl;
 			}
-			
+
 			sosiska.bus[i].nominal_baudrate = nominal_baud;
 			sosiska.bus[i].data_baudrate = data_baud;
 		}
 	}
-	
+
 	if( sendto( sockfd,
 	&sosiska,
 	sizeof(sosiska),
@@ -374,15 +374,15 @@ int main(int argc, char* argv[])
 	///////////////////////////////////////////////////////////////
 
 	//cout << "bytes_in_frame " << udp_tx_buf.bytes_written << endl;
-	
+
 	while( 1 )
 	{
 		//cout << "Polling for input..." << endl;
 		int event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
-		
+
 		canfd_frame rx_frame; // structure to store incoming CAN message
 		rx_frame.flags = CANFD_BRS; // CANFD bit-rate switch is enabled
-		
+
 		// iterate over reported events. should not exceed 1 event normally
 		for( int j = 0; j < event_count; j++)
 		{
@@ -392,29 +392,29 @@ int main(int argc, char* argv[])
 				perror("Unsupported event happened");
 				exit(EXIT_FAILURE);
 			}
-			
+
 			// UDP socket event?
 			if( events[j].data.fd == sockfd )
 			{
 				udp_receive();
 				continue;
 			}
-			
+
 			// timer event?
 			if( events[j].data.fd == tfd )
 			{
 				uint8_t dummy_buf[8];
 				read(tfd, dummy_buf, 8);
-				
+
 				if( frames_written > 0 )
 				{
 					// send combined frames to the client
 					udp_transmit();
 				}
-				
+
 				continue;
 			}
-			
+
 			// iterate over all posibly enabled CAN sockets
 			for( int i = 0; i < 6; i++)
 			{
@@ -423,7 +423,7 @@ int main(int argc, char* argv[])
 				{
 					continue;
 				}
-				
+
 				// process enabled socket
 				if( events[j].data.fd == can_sockets[i] )
 				{
@@ -434,10 +434,10 @@ int main(int argc, char* argv[])
 							// send full buffer to the client
 							udp_transmit();
 						}
-						
+
 						write_can_frame(&udp_tx_buf, i, rx_frame.can_id, rx_frame.len, rx_frame.data);
 						frames_written ++;
-						
+
 						if( !frame_integraion )
 						{
 							// send received frame immediately
@@ -448,9 +448,9 @@ int main(int argc, char* argv[])
 			}
 		}
 	}
-	
+
 	close(sockfd);
-	
+
 	return 0;
 }
 
@@ -463,25 +463,25 @@ void udp_receive(void)
 {
 	struct sockaddr_in dummy;
 	socklen_t len = 0;
-	
+
 	int packet_length = recvfrom(  sockfd, my_data, 8192, 0, (struct sockaddr *) &dummy, &len);
-	
+
 	if( packet_length < 0 )
 	{
 		return ;
 	}
-	
+
 	// cout << "packet_length " << (int)packet_length << endl;
-	
+
 	uint16_t index = 0; // specifies number of bytes read from the udp packet.
-	
+
 	while( index < packet_length ) // iterate over UDP packet
 	{
 		canfd_frame tx_frame; // structure to store incoming CAN message
 		tx_frame.flags = CANFD_BRS; // CANFD bit-rate switch is enabled
-		
+
 		uint32_t bus_id = 0;
-		
+
 		// parse one can frame from the rx UDP packet
 		uint8_t can_message_length = my_data[index] - 5;
 		tx_frame.len = can_message_length;
@@ -490,13 +490,13 @@ void udp_receive(void)
 		index += 4;
 		memcpy( tx_frame.data, &my_data[index], can_message_length);
 		index += can_message_length;
-		
+
 		tx_frame.can_id = decode_can_id( bus_id ) | CAN_EFF_FLAG;
-		
+
 		uint8_t bus_num = decode_bus_num( bus_id );
-		
+
 		int socket = can_sockets[bus_num]; // select socket to process
-		
+
 		if( socket >= 0 ) // process socket if is enabled
 		{
 			if (write(socket, &tx_frame, CANFD_MTU) != CANFD_MTU)
@@ -505,7 +505,7 @@ void udp_receive(void)
 			}
 		}
 	}
-	
+
 	if( index != packet_length )
 	{
 		cout << "I'm dead" << endl;
@@ -536,11 +536,11 @@ void ConfigParser(std::string file_path)
 {
 	//mINI::INIFile file(file_path);
 	//mINI::INIStructure ini;
-	
+
 	//file.read(ini);
-	
+
 	//frames_integration_period =
-	
+
 	/*
 	for( int i = 1; i < 13; i++)
 	{
@@ -568,25 +568,25 @@ int canfd_init(std::string can_name, int nonblock  )
 	struct sockaddr_can addr;
 	int s = 0;
 	if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) { perror("Socket");}
-	
+
 	if( nonblock )
 	{
 		fcntl(s, F_SETFL, O_NONBLOCK); // non blocking CAN frame receiving => reading from this socket does not block execution.
 	}
-	
+
 	strcpy(ifr.ifr_name, can_name.c_str() );
 	ioctl(s, SIOCGIFINDEX, &ifr);
-	
+
 	memset(&addr, 0, sizeof(addr));
 	addr.can_family = AF_CAN;
 	addr.can_ifindex = ifr.ifr_ifindex;
-	
+
 	if (setsockopt(s, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, &enable_canfd, sizeof(enable_canfd))) { perror("FD");}
-	
+
 	//int optval=7; // valid values are in the range [1,7] ; 1- low priority, 7 - high priority
 	//if ( setsockopt(s, SOL_SOCKET, SO_PRIORITY, &optval, sizeof(optval))) { perror("Priority");} //makes no difference on receiving
 	//if ( setsockopt(*s, SOL_SOCKET, SO_BUSY_POLL, &optval, sizeof(optval))) { perror("Busy poll");} //makes no difference on receiving
 	if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) { perror("Bind"); return 0; }
-	
+
 	return s;
 }
