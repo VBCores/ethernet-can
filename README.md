@@ -1,63 +1,95 @@
 ## Ethernet-CAN board
 
-
 http://vbcores.com/products/ethernet-can
-
 
 ![Ethernet-CAN](./extra/images/ethernet-can.png)
 
-### Configure board
+### 1. Firmware
 
-You need any SD-Card, format it to ```FAT16```
+1. Use STM32CubeProgrammer with [ST-Link](https://vbcores.tilda.ws/products/vb-stlink) for flashing.
+2. Firmware binaries: [download latest here](https://github.com/VBCores/ETH-FDCAN_firmware/releases) for BOTH H7 and G4
+3. Flash BOTH H7 and G4. See named connectors on the board
 
-Write to root dir ```ethernet.ini``` file. See [example](./extra/SD-card/ethernet.ini) file.
+### 2. Configure board SD card
 
-### Firmware
+1. Format an SD card as `FAT16`.
+2. Put `ethernet.ini` into the SD-card root directory.
+3. Use [`extra/SD-card/ethernet.ini`](./extra/SD-card/ethernet.ini) as the template.
 
-Use STM32CubeProgrammer tools
+### 3. Network configuration
 
-You need [ST-Link](https://vbcores.tilda.ws/products/vb-stlink) for uploads.
+TODO
 
-Current binaries are located at https://github.com/VBCores/ETH-FDCAN_firmware 
+### 4. Build and install on the target Linux host
 
-### Build and Install
+> This repository is intended to be built and installed on a Linux embedded host that controls the Ethernet-CAN board.
 
-You need clone git repo with submodules.
+Install required tools and runtime components:
 
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake libboost-program-options-dev python3 python3-systemd can-utils iproute2 kmod
 ```
+
+Clone with submodules:
+
+```bash
 git clone --recurse-submodules https://github.com/VBCores/ethernet-can
-cd build
-cmake ..
-cmake --build .
-sudo cmake --install .
-```
-After install look /opt/voltbro
-
-
-#### Config
-
-```
-/opt/voltbro/ethernet-can/config.ini
+cd ethernet-can
 ```
 
-For manual start, run ethernet-can startup script 
-```
-/opt/voltbro/bin/start_ethernet-can.sh
-```
+Build and install:
 
-#### Add to system startup
-
-```
-sudo cp ./extra/ethernet-can.service /lib/systemd/system/
+```bash
+cmake -S . -B build
+cmake --build build
+sudo cmake --install build
 ```
 
+Installed files:
+
+- `/opt/voltbro/ethernet-can/bin/ethernet-can`
+- `/opt/voltbro/ethernet-can/bin/start_ethernet_can.py`
+- `/opt/voltbro/ethernet-can/example.ini`
+- `/opt/voltbro/ethernet-can/systemd/ethernet-can.service`
+
+### 5. Host INI configuration
+
+Prefer storing host runtime `.ini` files in:
+
+```bash
+/opt/voltbro/ethernet-can
 ```
-sudo systemctl start ethernet-can.service
-sudo systemctl enable ethernet-can.service
+
+Use [`extra/configs/example.ini`](./extra/configs/example.ini) as the runtime template.
+
+Manual start for debugging (runs one `ethernet-can` process per `*.ini` file in the config directory):
+
+```bash
+sudo /opt/voltbro/ethernet-can/bin/start_ethernet_can.py
 ```
 
-After start, you see vcan[0-6] devices.
+### 6. Install and enable systemd unit
 
+> This is a final step. You can always undo/update this, but it helps to re-check all configs, unit files, etc. in `/opt/voltbro/ethernet-can` at this point to avoid confusion
 
-### libs
-https://github.com/metayeti/mINI
+Install the unit to system from the installed location:
+
+```bash
+sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can.service /etc/systemd/system/ethernet-can.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now ethernet-can.service
+```
+
+Check status/logs:
+
+```bash
+systemctl status ethernet-can.service
+journalctl -u ethernet-can.service -f
+```
+
+After startup, the service creates and configures `vcan0..vcan4`.
+
+### Used libraries
+
+- https://github.com/metayeti/mINI
