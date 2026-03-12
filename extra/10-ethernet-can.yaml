@@ -1,0 +1,8 @@
+network:
+  version: 2
+  ethernets:
+    INTERFACE_NAME:
+      dhcp4: false
+      optional: false
+      addresses:
+        - 10.0.0.1/24

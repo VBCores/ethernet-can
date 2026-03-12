@@ -53,7 +53,7 @@ def setup_vcan() -> bool:
         journal.send("Failed to load vcan kernel module", RETCODE=retcode)
         return False
 
-    VCAN_INTERFACES: set[str] = {"vcan0", "vcan1", "vcan2", "vcan3", "vcan4"}
+    VCAN_INTERFACES: set[str] = {"vcan0", "vcan1", "vcan2", "vcan3", "vcan4", "vcan5"}
     MTU = 72
 
     existing_ifaces = set(os.listdir('/sys/class/net/'))
