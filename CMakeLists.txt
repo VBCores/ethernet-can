@@ -18,4 +18,3 @@ install(TARGETS ethernet-can RUNTIME DESTINATION /opt/voltbro/ethernet-can/bin)
 install(PROGRAMS extra/start_ethernet_can.py DESTINATION /opt/voltbro/ethernet-can/bin)
 
 install(FILES extra/ethernet-can.service DESTINATION /opt/voltbro/ethernet-can/systemd)
-install(FILES extra/configs/example.ini DESTINATION /opt/voltbro/ethernet-can)
