@@ -145,7 +145,3 @@ candump vcan1.0
 - Before powering any CAN network, measure resistance between `CANH` and `CANL` with a multimeter. It should be about `60 Ohm` (two parallel `120 Ohm` terminators, one at each end of the line). If it is `120 Ohm`, one terminator is missing. Other values usually indicate a wiring/assembly issue.
 - CAN uses two signal wires, but stable operation also requires a shared ground reference between all devices. If Ethernet-CAN and the target device are powered from different supplies, connect grounds explicitly.
 - Recommended wire colors: `CANH` yellow, `CANL` green, ground black.
-
-## Used libraries
-
-- https://github.com/metayeti/mINI
