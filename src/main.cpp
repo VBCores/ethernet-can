@@ -659,7 +659,7 @@ int main(int argc, char* argv[]) {
         app.run();
     }
     catch (const std::exception& e) {
-        std::cerr << "v2 fatal error: " << e.what() << std::endl;
+        std::cerr << "host process fatal error: " << e.what() << std::endl;
         return 1;
     }
 }

@@ -1,6 +1,6 @@
 # Ethernet-CAN board
 
-http://vbcores.com/products/ethernet-can
+**[http://vbcores.com/products/ethernet-can](http://vbcores.com/products/ethernet-can)**
 
 ![Ethernet-CAN](./extra/images/ethernet-can.png)
 
@@ -13,7 +13,7 @@ Solder all CAN-FD jumper pads on the back side of the board to enable terminatio
 ### 2. Firmware
 
 1. Use STM32CubeProgrammer with [ST-Link](https://vbcores.tilda.ws/products/vb-stlink) for flashing.
-2. Firmware binaries: [download latest here](https://github.com/VBCores/ETH-FDCAN_firmware/releases) for BOTH H7 and G4
+2. Firmware binaries: download latest from [releases](https://github.com/VBCores/ethernet-can/releases) for BOTH H7 and G4
 3. Flash BOTH H7 and G4. See named connectors on the board
     - On the G4 chip, set Option Byte `NSWBoot0` to `0` (unchecked in `OB -> Option Bytes`).
 
@@ -25,14 +25,15 @@ Solder all CAN-FD jumper pads on the back side of the board to enable terminatio
 
 ### 4. Host network configuration
 
-Ethernet-CAN is an IP device that communicates over UDP. It reads a static device IP from SD card (`ethernet.ini`) and sends data to the static host IP. For reliable operation, ensure these 4 conditions:
+Ethernet-CAN is an IP device that communicates over UDP. It reads a static device IP from SD card (`ethernet.ini`) and sends data to the static host IP. For reliable operation, ensure these 3 conditions:
 
 1. Host and Ethernet-CAN are in the same network and have a direct/simple route between them.
 2. Ethernet-CAN has a unique static IP (for example, not reused by DHCP).
 3. Host IP never changes
-4. Pair `[Ethernet-CAN IP; Host IP]` is unique. You can connect multiple (N) Ethernet-CAN boards to one host, but then host must be reachable under N different IPs. This limitation will be fixed in future releases.
 
-There are many valid network topologies. This guide covers only the simplest direct point-to-point setup:
+Host-side bridge supports multiple Ethernet-CAN boards with different device IPs behind one shared host IP. Boards are distinguished on the host by UDP source IP.
+
+There are many valid network topologies. For examples, see "[App Notes](./app_notes)". This guide covers only the simplest direct point-to-point setup:
 
 #### Straightforward P2P network configuration
 
@@ -79,20 +80,32 @@ Installed files:
 - `/opt/voltbro/ethernet-can/bin/start_ethernet_can.py`
 - `/opt/voltbro/ethernet-can/systemd/ethernet-can.service`
 
-Note that `.ini` host config file is NOT installed automatically - this step is covered next.
+Note that `.ini` host config files are NOT installed automatically - this step is covered next.
 
 ### 6. Host INI configuration
 
 Use [`extra/configs/example.ini`](./extra/configs/example.ini) as the runtime template.
 
+Each `.ini` describes one Ethernet-CAN board. The `start_ethernet_can.py` launcher scans all `*.ini` files, validates them, creates the required VCAN interfaces, and starts one shared host process with all boards passed on the command line.
+
+`[HOST_INTERFACE_MAP]` defines both bus enablement and Linux interface mapping. A bus is enabled if it is present in that section. Example:
+
+```ini
+[HOST_INTERFACE_MAP]
+bus0 = vcan1.0
+bus1 = vcan1.1
+bus2 = vcan1.2
+```
+
+In this example, only buses `0`, `1`, and `2` are enabled for that board.
+
 > Simplest plan:
 >
 > - Copy [`extra/configs/example.ini`](./extra/configs/example.ini) to `/opt/voltbro/ethernet-can/`
 > - Rename however you see fit
-> - Update configuration: addresses, bitrate, etc.
+> - Update configuration: addresses, bitrate, and host CAN interface map
 >
-
-You can have multiple `.ini` configs to talk to multiple EthernetCAN boards. Systemd unit that we will install later will manage them and run `ethernet-can` host process for each `.ini`. You can name them however you want, service will scan the directory for ALL `*.ini` files.
+>> Dev note: as mentioned, `.ini` configs are NOT parsed by host binary and are used by launcher. You can start host binary directly by passing required CLI parameters yourself. It is not recommended, but if you have some sort of dynamic network, you **can** do it and/or write custom launcher.
 
 Prefer storing configuration files in `/opt/voltbro/ethernet-can`, otherwise update environment variables accordingly (see [`extra/ethernet-can.service`](./extra/ethernet-can.service) for env params).
 
@@ -121,10 +134,10 @@ systemctl status ethernet-can.service
 journalctl -u ethernet-can.service -f
 ```
 
-After startup, the service creates and configures `vcan0..vcan5`, for example this should work (may be silent if no data on can-bus, but should NOT crash/exit):
+After startup, the launcher creates and configures the interfaces referenced by `[HOST_INTERFACE_MAP]`. For example, with the current template this should work (may be silent if no data on CAN bus, but should NOT crash/exit):
 
 ```bash
-candump vcan0
+candump vcan1.0
 ```
 
 ## Troubleshooting notes
