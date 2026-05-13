@@ -83,6 +83,8 @@ The two central C++ classes are:
 
 - Do not create small helper methods if they are referenced only once, "inline" them
 - For each feature deduce minimal set of functions/methods to implement it. For example, if feature requires adding a field, but this field is never referenced outside of the class, it does not need a getter/setter.
+- No redundant classes - if class incapsulates system primitive and wraps some logic for it and is never reused (i.e. only owned by some other class), then this "owner class" should have this primitive and logic, without intermediary
+- fail-fast - if some guarantees that we expect are not met, just crash and print something to cerr
 
 Avoid "production enterprise ready" mentality. Yes, all code should be complete and correct, but its scope and use case is very clearly defined and bound to this one app, so we do not need to mind any other use cases, other users, etc.
 
