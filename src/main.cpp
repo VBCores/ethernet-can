@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
+#include <netdb.h>
 #include <net/if.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
@@ -30,28 +31,13 @@ constexpr std::uint16_t kClientPort = 1555;
 constexpr std::size_t kMaxUdpPacketSize = 8192;
 constexpr std::size_t kMaxBundledPayloadSize = 512;
 constexpr int kMaxEvents = 32;
-constexpr std::uint32_t kDeviceMagicNumber = 0x9a0a6ac6;
-
-struct FdcanPeripheralParams {
-    std::uint16_t nominal_baudrate = 0;
-    std::uint16_t data_baudrate = 0;
-};
-
-struct DeviceFdcanConfig {
-    std::uint32_t magic_number = kDeviceMagicNumber;
-    std::uint32_t frames_integration_period = 0;
-    std::array<FdcanPeripheralParams, kBusCount> bus {};
-};
+constexpr std::array<std::uint8_t, 4> kHeartbeatPacket {'E', 'H', 'B', '1'};
 
 struct BoardConfig {
     std::string name;
     std::string device_ip;
     std::uint64_t integration_period_ns = 0;
-    std::uint16_t nominal_baud = 0;
-    std::uint16_t data_baud = 0;
     bool has_period = false;
-    bool has_nominal = false;
-    bool has_data = false;
     std::array<bool, kBusCount> enabled_buses {};
     std::array<std::string, kBusCount> interface_names {};
 
@@ -72,16 +58,68 @@ std::uint32_t encode_bus_id(std::uint8_t bus_num, std::uint32_t can_id) {
     return (can_id & 0x1FFFFFFFU) | (static_cast<std::uint32_t>(bus_num) << 29U);
 }
 
+bool parse_ipv4_address(const std::string& address, sockaddr_in* resolved) {
+    sockaddr_in candidate {};
+    candidate.sin_family = AF_INET;
+    candidate.sin_port = htons(kClientPort);
+    if (::inet_pton(AF_INET, address.c_str(), &candidate.sin_addr) != 1) {
+        return false;
+    }
+
+    *resolved = candidate;
+    return true;
+}
+
+sockaddr_in resolve_device_address(const std::string& address) {
+    sockaddr_in literal {};
+    if (parse_ipv4_address(address, &literal)) {
+        return literal;
+    }
+
+    addrinfo hints {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+
+    addrinfo* raw_result = nullptr;
+    const auto service = std::to_string(kClientPort);
+    const int rc = ::getaddrinfo(address.c_str(), service.c_str(), &hints, &raw_result);
+    if (rc != 0) {
+        throw std::runtime_error("failed to resolve device address " + address + ": " + ::gai_strerror(rc));
+    }
+
+    std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> result(raw_result, ::freeaddrinfo);
+    if (result == nullptr || result->ai_addr == nullptr || result->ai_addrlen < sizeof(sockaddr_in)) {
+        throw std::runtime_error("failed to resolve device address " + address + ": no IPv4 address");
+    }
+
+    sockaddr_in resolved {};
+    std::memcpy(&resolved, result->ai_addr, sizeof(resolved));
+    resolved.sin_port = htons(kClientPort);
+    return resolved;
+}
+
+bool is_heartbeat_packet(const std::uint8_t* data, std::size_t size) {
+    return size == kHeartbeatPacket.size() && std::memcmp(data, kHeartbeatPacket.data(), kHeartbeatPacket.size()) == 0;
+}
+
+std::string ipv4_to_string(const in_addr& address) {
+    char buffer[INET_ADDRSTRLEN] {};
+    if (::inet_ntop(AF_INET, &address, buffer, sizeof(buffer)) == nullptr) {
+        throw std::runtime_error("inet_ntop failed: " + std::string(std::strerror(errno)));
+    }
+    return buffer;
+}
+
 class BoardSession {
 public:
     explicit BoardSession(BoardConfig cfg) : config(std::move(cfg)) {
         can_fds.fill(-1);
 
-        remote_addr.sin_family = AF_INET;
-        remote_addr.sin_port = htons(kClientPort);
-        if (inet_pton(AF_INET, config.device_ip.c_str(), &remote_addr.sin_addr) != 1) {
-            throw std::runtime_error("invalid device ip in " + config.label());
-        }
+        remote_addr = resolve_device_address(config.device_ip);
+        resolved_device_ip = ipv4_to_string(remote_addr.sin_addr);
+        sockaddr_in literal {};
+        refresh_device_address = !parse_ipv4_address(config.device_ip, &literal);
 
         for (std::size_t bus = 0; bus < kBusCount; ++bus) {
             if (!config.enabled_buses[bus]) {
@@ -149,6 +187,32 @@ public:
         }
     }
 
+    bool refresh_resolved_address() {
+        if (!refresh_device_address) {
+            return false;
+        }
+
+        sockaddr_in next_addr {};
+        try {
+            next_addr = resolve_device_address(config.device_ip);
+        }
+        catch (const std::exception& e) {
+            std::cerr << "failed to re-resolve " << config.label() << ": " << e.what() << std::endl;
+            return false;
+        }
+
+        const auto next_ip = ipv4_to_string(next_addr.sin_addr);
+        if (next_ip == resolved_device_ip) {
+            return false;
+        }
+
+        std::cout << "Resolved " << config.label() << " moved from " << resolved_device_ip << " to " << next_ip
+                  << std::endl;
+        remote_addr = next_addr;
+        resolved_device_ip = next_ip;
+        return true;
+    }
+
     ~BoardSession() {
         for (int fd : can_fds) {
             if (fd >= 0) {
@@ -157,31 +221,6 @@ public:
         }
         if (timer_fd >= 0) {
             ::close(timer_fd);
-        }
-    }
-
-    void send_startup_config(int udp_fd) {
-        DeviceFdcanConfig packet;
-        packet.frames_integration_period = static_cast<std::uint32_t>(config.integration_period_ns);
-
-        for (std::size_t bus = 0; bus < kBusCount; ++bus) {
-            if (!config.enabled_buses[bus]) {
-                continue;
-            }
-            packet.bus[bus].nominal_baudrate = config.nominal_baud;
-            packet.bus[bus].data_baudrate = config.data_baud;
-        }
-
-        const auto sent = ::sendto(
-            udp_fd,
-            &packet,
-            sizeof(packet),
-            0,
-            reinterpret_cast<const sockaddr*>(&remote_addr),
-            sizeof(remote_addr));
-
-        if (sent != static_cast<ssize_t>(sizeof(packet))) {
-            throw std::runtime_error("startup sendto failed for " + config.label() + ": " + std::strerror(errno));
         }
     }
 
@@ -272,6 +311,8 @@ public:
 
     BoardConfig config;
     sockaddr_in remote_addr {};
+    std::string resolved_device_ip;
+    bool refresh_device_address = false;
     std::array<int, kBusCount> can_fds {};
     int timer_fd = -1;
     std::vector<std::uint8_t> tx_bundle;
@@ -387,9 +428,8 @@ class HostBridgeApp {
             boards.push_back(std::make_unique<BoardSession>(std::move(config)));
         }
 
+        rebuild_board_ip_map();
         for (const auto& board : boards) {
-            boards_by_ip.emplace(board->config.device_ip, board.get());
-
             for (std::size_t bus = 0; bus < kBusCount; ++bus) {
                 if (board->can_fds[bus] < 0) {
                     continue;
@@ -443,13 +483,6 @@ class HostBridgeApp {
         }
     }
 
-    void initialize() {
-        for (const auto& board : boards) {
-            std::cout << "Sending startup config to " << board->config.label() << std::endl;
-            board->send_startup_config(udp_fd);
-        }
-    }
-
     void run() {
         std::array<epoll_event, kMaxEvents> events {};
         std::array<std::uint8_t, kMaxUdpPacketSize> udp_buffer {};
@@ -499,9 +532,22 @@ class HostBridgeApp {
                             throw std::runtime_error("inet_ntop failed: " + std::string(std::strerror(errno)));
                         }
 
-                        const auto board_it = boards_by_ip.find(ip_buffer);
+                        auto board_it = boards_by_ip.find(ip_buffer);
                         if (board_it == boards_by_ip.end()) {
+                            refresh_hostname_board_addresses();
+                            board_it = boards_by_ip.find(ip_buffer);
+                        }
+
+                        if (board_it == boards_by_ip.end()) {
+                            if (is_heartbeat_packet(udp_buffer.data(), static_cast<std::size_t>(bytes))) {
+                                std::cerr << "Ignoring heartbeat from unknown device " << ip_buffer << std::endl;
+                                continue;
+                            }
                             throw std::runtime_error("UDP packet from unknown device " + std::string(ip_buffer));
+                        }
+
+                        if (is_heartbeat_packet(udp_buffer.data(), static_cast<std::size_t>(bytes))) {
+                            continue;
                         }
 
                         board_it->second->on_udp_packet(udp_buffer.data(), static_cast<std::size_t>(bytes));
@@ -530,6 +576,30 @@ class HostBridgeApp {
         std::size_t bus = 0;
     };
 
+    void rebuild_board_ip_map() {
+        std::unordered_map<std::string, BoardSession*> next_boards_by_ip;
+        for (const auto& board : boards) {
+            const auto [board_it, inserted] = next_boards_by_ip.emplace(board->resolved_device_ip, board.get());
+            if (!inserted) {
+                throw std::runtime_error(
+                    "resolved device address collision on " + board->resolved_device_ip + " between " +
+                    board_it->second->config.label() + " and " + board->config.label()
+                );
+            }
+        }
+        boards_by_ip = std::move(next_boards_by_ip);
+    }
+
+    void refresh_hostname_board_addresses() {
+        bool changed = false;
+        for (const auto& board : boards) {
+            changed = board->refresh_resolved_address() || changed;
+        }
+        if (changed) {
+            rebuild_board_ip_map();
+        }
+    }
+
     int udp_fd = -1;
     int epoll_fd = -1;
     std::vector<std::unique_ptr<BoardSession>> boards;
@@ -557,7 +627,7 @@ int main(int argc, char* argv[]) {
 
             if (arg == "--help" || arg == "-h") {
                 std::cout << "Usage: " << argv[0]
-                          << " --host-ip IP --board NAME --device-ip IP --period NS --nominal KBIT --data KBIT "
+                          << " --host-ip IP --board NAME --device-ip ADDRESS --period NS "
                              "[--bus0 IFACE] ... [--bus5 IFACE] [--board NAME ...]"
                           << std::endl;
                 return 0;
@@ -594,20 +664,6 @@ int main(int argc, char* argv[]) {
                 }
                 current->integration_period_ns = std::stoull(require_value(i, arg));
                 current->has_period = true;
-            }
-            else if (arg == "--nominal") {
-                if (current->has_nominal) {
-                    throw std::runtime_error("duplicate --nominal for board " + current->name);
-                }
-                current->nominal_baud = static_cast<std::uint16_t>(std::stoul(require_value(i, arg)));
-                current->has_nominal = true;
-            }
-            else if (arg == "--data") {
-                if (current->has_data) {
-                    throw std::runtime_error("duplicate --data for board " + current->name);
-                }
-                current->data_baud = static_cast<std::uint16_t>(std::stoul(require_value(i, arg)));
-                current->has_data = true;
             }
             else if (
                 arg == "--bus0" ||
@@ -646,16 +702,9 @@ int main(int argc, char* argv[]) {
             if (!config.has_period) {
                 throw std::runtime_error("board missing --period: " + config.name);
             }
-            if (!config.has_nominal) {
-                throw std::runtime_error("board missing --nominal: " + config.name);
-            }
-            if (!config.has_data) {
-                throw std::runtime_error("board missing --data: " + config.name);
-            }
         }
 
         HostBridgeApp app(std::move(host_ip), std::move(configs));
-        app.initialize();
         app.run();
     }
     catch (const std::exception& e) {

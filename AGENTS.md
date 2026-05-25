@@ -7,7 +7,7 @@ This repository contains the Linux host bridge for VBCores Ethernet-CAN boards. 
 - `src/main.cpp`: Main host bridge. This is the runtime binary built by CMake. It owns UDP, SocketCAN sockets, epoll, per-board runtime state, packet parsing, and CAN frame forwarding.
 - `extra/start_ethernet_can.py`: Launcher and host state sync. It scans host `.ini` configs, validates them, creates/configures required `vcan` interfaces, and starts the host binary with generated CLI arguments.
 - `extra/configs/example.ini`: Host-side board config template. Each `.ini` describes one board.
-- `extra/SD-card/ethernet.ini`: SD-card config template for firmware. This sets the board device IP and host IP.
+- `extra/SD-card/ethernet.ini`: **Optional** SD-card config template for firmware identity overrides and explicit static/P2P network settings.
 - `extra/ethernet-can.service`: systemd unit that runs the Python launcher.
 - `extra/10-ethernet-can.yaml`: netplan example for simple point-to-point host networking.
 - `app_notes/Multiple Boards.md`: Practical guide for connecting two boards to one host.
@@ -23,11 +23,11 @@ The host binary does not parse `.ini` files. It expects explicit CLI arguments g
 ```bash
 ethernet-can \
   --host-ip 192.168.0.100 \
-  --board board1 --device-ip 192.168.0.2 --period 10000000 --nominal 1000 --data 8000 --bus0 vcan1.0 \
-  --board board2 --device-ip 192.168.0.3 --period 10000000 --nominal 1000 --data 8000 --bus0 vcan2.0
+  --board board1 --device-ip 192.168.0.2 --period 10000000 --bus0 vcan1.0 \
+  --board board2 --device-ip 192.168.0.3 --period 10000000 --bus0 vcan2.0
 ```
 
-`src/main.cpp` binds one UDP socket to `--host-ip:1556`. It sends board startup config to each board at `device-ip:1555`. Incoming UDP datagrams are dispatched by source IP to the correct board session.
+`extra/start_ethernet_can.py` sends board runtime config to each board over HTTP REST before launching the host binary. While the host binary runs, the launcher polls `GET /api/v1/status`; after repeated no-response or config mismatch failures it logs and reapplies `PUT /api/v1/config`. `src/main.cpp` binds one UDP socket to `--host-ip:1556` for CAN data only. Incoming UDP datagrams are dispatched by source IP to the correct board session. Literal IPv4 `--device-ip` values are used directly. Hostnames are resolved at startup and re-resolved when UDP arrives from an unknown source.
 
 CAN bus IDs in packets remain logical bus numbers `0..5`. The host maps those logical buses to Linux interface names from the config.
 
@@ -37,16 +37,17 @@ The host preserves the existing firmware wire format:
 
 - UDP server port on host: `1556`
 - UDP client port on board: `1555`
-- Startup config packet begins with magic `0x9a0a6ac6`
+- Runtime config is applied over HTTP `PUT /api/v1/config`; UDP startup config is deprecated and must not be sent by the host binary.
 - CAN frame packet records use 1 byte length, 4 bytes encoded bus/CAN ID, then payload
 - Encoded bus/CAN ID uses top 3 bits for bus number and lower 29 bits for extended CAN ID
+- H7 may send a 4-byte UDP heartbeat packet `EHB1`; host code treats it as service traffic and never forwards it to SocketCAN.
 
 If frames arrive from the board but are not visible in `candump`, inspect:
 
 - Launcher `Launching:` line: confirm expected `--busN iface` args are present.
 - The relevant `[HOST_INTERFACE_MAP]` entry: bus presence is what enables forwarding.
 - `candump` interface: it must match the mapped interface, for example `vcan2.0`.
-- Source IP: incoming UDP source must match the configured `Device_IP_address`.
+- Source IP: incoming UDP source should match the current resolved `Device_IP_address`; for hostnames, unknown sources trigger a re-resolve.
 
 ## Build notes
 
@@ -60,8 +61,7 @@ Start with `README.md` for the user-facing flow, then read `extra/configs/exampl
 2. Construct `HostBridgeApp`.
 3. Open one UDP socket and per-board CAN sockets.
 4. Register UDP, CAN, and timer fds in epoll.
-5. Send startup config to each board.
-6. Dispatch events in the main loop.
+5. Dispatch events in the main loop.
 
 The two central C++ classes are:
 

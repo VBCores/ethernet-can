@@ -18,17 +18,23 @@ Prepare one SD card for each board.
 Board 1 `ethernet.ini`:
 
 ```ini
-[ethernet]
-host_ip = [192, 168, 0, 100]
-device_ip = [192, 168, 0, 2]
+[device]
+hostname = ethernetcan-1
+
+[network]
+host_ip = 192.168.0.100
+device_ip = 192.168.0.2
 ```
 
 Board 2 `ethernet.ini`:
 
 ```ini
-[ethernet]
-host_ip = [192, 168, 0, 100]
-device_ip = [192, 168, 0, 3]
+[device]
+hostname = ethernetcan-2
+
+[network]
+host_ip = 192.168.0.100
+device_ip = 192.168.0.3
 ```
 
 ## 2. Configure host network

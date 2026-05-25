@@ -17,15 +17,28 @@ Solder all CAN-FD jumper pads on the back side of the board to enable terminatio
 3. Flash BOTH H7 and G4. See named connectors on the board
     - On the G4 chip, set Option Byte `NSWBoot0` to `0` (unchecked in `OB -> Option Bytes`).
 
-### 3. Configure board SD card
+### 3. Optional board SD card
+
+The SD card is optional. Use it only when you need to override board identity or force explicit static/P2P addressing.
 
 1. Format an SD card as `FAT16`.
 2. Put `ethernet.ini` into the SD-card root directory.
 3. Use [`extra/SD-card/ethernet.ini`](./extra/SD-card/ethernet.ini) as the template.
 
+Supported optional fields:
+
+- `[device] hostname`: mDNS hostname, default `ethernetcan` for `ethernetcan.local`.
+- `[device] mac_address`: optional board MAC override. If omitted, firmware derives a locally administered MAC from the H7 hardware UID.
+- `[network] dhcp`: optional boolean, default `true`.
+- `[network] host_ip`, `device_ip`, `netmask`, `gateway`: explicit static/P2P network values. If `device_ip` is present, firmware disables DHCP.
+
+Legacy `[ethernet]` fields are still accepted for older SD cards, including `hostname`, `mac_address`, `host_ip`, and `device_ip` arrays.
+
+The board exposes a compact web panel at `http://<device>/panel`. The same firmware status is available as JSON at `GET /api/v1/status`; it includes network state, reset reason, IWDG health, queue drops, and H7 bus-off counters.
+
 ### 4. Host network configuration
 
-Ethernet-CAN is an IP device that communicates over UDP. It reads a static device IP from SD card (`ethernet.ini`) and sends data to the static host IP. For reliable operation, ensure these 3 conditions:
+Ethernet-CAN is an IP device that communicates over HTTP REST for runtime configuration and UDP for CAN data. In static/P2P mode, ensure these 3 conditions:
 
 1. Host and Ethernet-CAN are in the same network and have a direct/simple route between them.
 2. Ethernet-CAN has a unique static IP (for example, not reused by DHCP).
@@ -56,7 +69,7 @@ Install required tools and runtime components:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake libboost-program-options-dev python3 python3-systemd can-utils iproute2 kmod
+sudo apt install -y build-essential cmake libboost-program-options-dev python3 python3-systemd python3-requests python3-tenacity can-utils iproute2 kmod
 ```
 
 Clone with submodules:
@@ -86,7 +99,7 @@ Note that `.ini` host config files are NOT installed automatically - this step i
 
 Use [`extra/configs/example.ini`](./extra/configs/example.ini) as the runtime template.
 
-Each `.ini` describes one Ethernet-CAN board. The `start_ethernet_can.py` launcher scans all `*.ini` files, validates them, creates the required VCAN interfaces, and starts one shared host process with all boards passed on the command line.
+Each `.ini` describes one Ethernet-CAN board. The `start_ethernet_can.py` launcher scans all `*.ini` files, validates them, creates the required VCAN interfaces, applies the board config via HTTP REST, and starts one shared host process with all boards passed on the command line. `Device_IP_address` can be either an IPv4 address or a hostname such as `ethernetcan.local`. Literal IPv4 addresses are used directly. Hostnames are resolved at startup and re-resolved if UDP arrives from an unknown source, so a board can recover after reboot if DHCP gives the same hostname a new address.
 
 `[HOST_INTERFACE_MAP]` defines both bus enablement and Linux interface mapping. A bus is enabled if it is present in that section. Example:
 
@@ -105,9 +118,11 @@ In this example, only buses `0`, `1`, and `2` are enabled for that board.
 > - Rename however you see fit
 > - Update configuration: addresses, bitrate, and host CAN interface map
 >
->> Dev note: as mentioned, `.ini` configs are NOT parsed by host binary and are used by launcher. You can start host binary directly by passing required CLI parameters yourself. It is not recommended, but if you have some sort of dynamic network, you **can** do it and/or write custom launcher.
+>> Dev note: as mentioned, `.ini` configs are NOT parsed by host binary and are used by launcher. The host binary is only the UDP data plane; runtime FDCAN config is applied by the launcher through `PUT /api/v1/config`. You can start host binary directly by passing required CLI parameters yourself, but then you must configure the board separately.
 
 Prefer storing configuration files in `/opt/voltbro/ethernet-can`, otherwise update environment variables accordingly (see [`extra/ethernet-can.service`](./extra/ethernet-can.service) for env params).
+
+The launcher keeps watching each board while the host data plane is running. It polls `GET /api/v1/status` at `ETHERNET_CAN_HEALTHCHECK_HZ` and compares the reported runtime config with the requested `.ini` config. If a board fails to answer or reports a mismatching config more than `ETHERNET_CAN_HEALTHCHECK_MAX_FAILURES` times in a row, the launcher logs the reason and sends `PUT /api/v1/config` again. Defaults are `1.0` Hz and `3` tolerated consecutive failures.
 
 Manual start for debugging:
 
