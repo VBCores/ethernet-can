@@ -325,6 +325,20 @@ def board_runtime_compatible(config: dict, actual: dict) -> tuple[bool, str, obj
     return True, "ok", period
 
 
+def get_board_config(device_ip: str) -> dict:
+    response = requests.get(
+        f"http://{device_ip}/api/v1/config",
+        headers={"Accept": "application/json"},
+        timeout=REST_TIMEOUT_SECONDS,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"config HTTP {response.status_code} {response.text}")
+    actual = response.json()
+    if not isinstance(actual, dict):
+        raise RuntimeError("config response is not an object")
+    return actual
+
+
 def wait_for_board_runtime_config(config: dict, timeout_seconds: float) -> int:
     board_name = config["name"]
     device_ip = config["device_ip"]
@@ -344,7 +358,8 @@ def wait_for_board_runtime_config(config: dict, timeout_seconds: float) -> int:
             if response.status_code == 200:
                 status = response.json()
                 if status.get("fdcan", {}).get("config_applied") is True:
-                    ok, reason, period = board_runtime_compatible(config, status.get("config"))
+                    actual_config = get_board_config(device_ip)
+                    ok, reason, period = board_runtime_compatible(config, actual_config)
                     if ok and period is not None:
                         journal.send(f"  board config ready, period={period} ns")
                         return period
@@ -436,7 +451,11 @@ def healthcheck_board(config: dict) -> tuple[bool, str]:
         return False, f"invalid status json: {exc}"
 
     if config["managed"]:
-        matches, reason = config_matches(config["payload"], status.get("config"))
+        try:
+            actual_config = get_board_config(device_ip)
+        except (requests.RequestException, RuntimeError, ValueError) as exc:
+            return False, f"config fetch failed: {exc}"
+        matches, reason = config_matches(config["payload"], actual_config)
         if not matches:
             return False, reason
         return True, "ok"
@@ -444,7 +463,11 @@ def healthcheck_board(config: dict) -> tuple[bool, str]:
     if status.get("fdcan", {}).get("config_applied") is not True:
         return False, "board config is not applied"
 
-    ok, reason, _period = board_runtime_compatible(config, status.get("config"))
+    try:
+        actual_config = get_board_config(device_ip)
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
+        return False, f"config fetch failed: {exc}"
+    ok, reason, _period = board_runtime_compatible(config, actual_config)
     if not ok:
         return False, reason
     return True, "ok"
