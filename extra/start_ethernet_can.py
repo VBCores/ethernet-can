@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
-import configparser
+import json
 import os
 import subprocess
 import sys
@@ -12,7 +12,6 @@ from pathlib import Path
 import requests
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_fixed
 
-# "magic constants" - most used only once, but named for clarity
 MTU = 72
 BUS_COUNT = 6
 BUS_PREFIX = "bus"
@@ -21,10 +20,10 @@ REST_RETRIES = 10
 REST_RETRY_DELAY_SECONDS = 0.5
 HEALTHCHECK_HZ = os.getenv("ETHERNET_CAN_HEALTHCHECK_HZ", "1.0")
 HEALTHCHECK_MAX_FAILURES = os.getenv("ETHERNET_CAN_HEALTHCHECK_MAX_FAILURES", "3")
+CONFIG_WAIT_TIMEOUT_SECONDS = os.getenv("ETHERNET_CAN_CONFIG_WAIT_TIMEOUT_SECONDS", "30")
 VALID_NOMINAL_BAUDS = {62, 125, 250, 500, 1000}
 VALID_DATA_BAUDS = {0, 1000, 2000, 4000, 8000}
 
-# Env config
 DEFAULT_CONFIG_DIR = Path(os.getenv("ETHERNET_CAN_CONFIGS_DIR", "/opt/voltbro/ethernet-can")).resolve()
 ETHERNET_CAN_EXECUTABLE = os.getenv("ETHERNET_CAN_EXECUTABLE", "/opt/voltbro/ethernet-can/bin/ethernet-can")
 
@@ -54,30 +53,18 @@ def fail(message: str) -> None:
     sys.exit(1)
 
 
-def require(obj, *path, config_path: Path):
-    current = obj
-    traversed: list[str] = []
-
-    for key in path:
-        traversed.append(str(key))
-        try:
-            current = current[key]
-        except KeyError:
-            fail(f"missing {'.'.join(traversed)} in {config_path}")
-
-    return current
-
-
 def run(cmd: list[str]) -> None:
     result = subprocess.run(cmd)
     if result.returncode != 0:
         fail(f"command failed ({result.returncode}): <{' '.join(cmd)}>")
 
 
-def parse_uint(value: str, label: str, config_path: Path, max_value: int = 0xFFFFFFFF) -> int:
+def parse_uint(value, label: str, config_path: Path, max_value: int = 0xFFFFFFFF) -> int:
+    if isinstance(value, bool):
+        fail(f"invalid {label} in {config_path}: {value}")
     try:
-        parsed = int(value.strip(), 10)
-    except ValueError:
+        parsed = int(value)
+    except (TypeError, ValueError):
         fail(f"invalid {label} in {config_path}: {value}")
 
     if not (0 <= parsed <= max_value):
@@ -85,10 +72,24 @@ def parse_uint(value: str, label: str, config_path: Path, max_value: int = 0xFFF
     return parsed
 
 
+def require_mapping(value, label: str, config_path: Path) -> dict:
+    if not isinstance(value, dict):
+        fail(f"missing or invalid {label} in {config_path}")
+    return value
+
+
+def read_alias(mapping: dict, aliases: tuple[str, ...], label: str, config_path: Path):
+    for alias in aliases:
+        if alias in mapping:
+            return mapping[alias]
+    fail(f"missing {label} in {config_path}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", action="append", default=[])
     parser.add_argument("--config-dir", action="append", default=[])
+    parser.add_argument("--config-wait-timeout", default=CONFIG_WAIT_TIMEOUT_SECONDS)
     return parser.parse_args()
 
 
@@ -102,11 +103,11 @@ def discover_configs(args: argparse.Namespace) -> list[Path]:
     for config_dir in config_dirs:
         if not config_dir.is_dir():
             fail(f"not a config dir: {config_dir}")
-        config_paths.extend(sorted(path.resolve() for path in config_dir.glob("*.ini")))
+        config_paths.extend(sorted(path.resolve() for path in config_dir.glob("*.json")))
 
     config_paths = sorted(set(config_paths))
     if not config_paths:
-        fail("no config files found")
+        fail("no JSON config files found")
     return config_paths
 
 
@@ -122,121 +123,149 @@ def sync_interfaces(interfaces: list[str]) -> None:
         run(["ip", "link", "set", iface, "up"])
 
 
-def build_executable_args(config_paths: list[Path]) -> tuple[list[str], list[str], list[dict]]:
+def parse_bus_map(network: dict, config_path: Path) -> tuple[dict[int, str], list[bool]]:
+    host_interface_map = require_mapping(network.get("host_interface_map"), "network.host_interface_map", config_path)
+    interfaces: dict[int, str] = {}
+    enabled_buses = [False] * BUS_COUNT
+    bus_error_msg = f"invalid bus name %s in {config_path}, expected {BUS_PREFIX}0...{BUS_PREFIX}{BUS_COUNT-1}"
+
+    for bus_name, iface_value in host_interface_map.items():
+        if not isinstance(bus_name, str) or not bus_name.startswith(BUS_PREFIX):
+            fail(bus_error_msg % bus_name)
+        try:
+            bus_num = int(bus_name.removeprefix(BUS_PREFIX))
+        except ValueError:
+            fail(bus_error_msg % bus_name)
+        if not (0 <= bus_num < BUS_COUNT):
+            fail(bus_error_msg % bus_name)
+
+        iface = str(iface_value).strip()
+        if not iface:
+            fail(f"empty interface name for {bus_name} in {config_path}")
+        interfaces[bus_num] = iface
+        enabled_buses[bus_num] = True
+
+    if not interfaces:
+        fail(f"network.host_interface_map has no enabled buses in {config_path}")
+    return interfaces, enabled_buses
+
+
+def load_board_configs(config_paths: list[Path]) -> tuple[str, list[str], list[dict]]:
     host_ip = None
-    cmd = [ETHERNET_CAN_EXECUTABLE]
     owners: dict[str, str] = {}
-    boards: dict[str, str] = {}
-    rest_configs: list[dict] = []
+    boards_by_name: dict[str, str] = {}
+    devices: dict[str, str] = {}
+    board_configs: list[dict] = []
 
     for config_path in config_paths:
-        ini = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
-        if not ini.read(config_path):
-            fail(f"failed to read {config_path}")
+        try:
+            raw_config = json.loads(config_path.read_text())
+        except OSError as exc:
+            fail(f"failed to read {config_path}: {exc}")
+        except ValueError as exc:
+            fail(f"invalid JSON in {config_path}: {exc}")
 
-        config_host_ip = require(ini, "NETWORK_PARAMS", "Host_IP_address", config_path=config_path).strip()
+        config = require_mapping(raw_config, "root object", config_path)
+        extra_top_level = set(config) - {"network", "fdcan"}
+        if extra_top_level:
+            fail(f"unsupported top-level keys in {config_path}: {sorted(extra_top_level)}")
+
+        network = require_mapping(config.get("network"), "network", config_path)
+        board_name = config_path.stem
+        if board_name in boards_by_name:
+            fail(f"duplicate board name <{board_name}>: <{config_path}> and <{boards_by_name[board_name]}>")
+        boards_by_name[board_name] = str(config_path)
+
+        config_host_ip = str(read_alias(
+            network,
+            ("host_ip", "host_ip_address", "Host_IP_address"),
+            "network.host_ip",
+            config_path,
+        )).strip()
         if host_ip is None:
             host_ip = config_host_ip
-            cmd.extend(["--host-ip", host_ip])
         elif host_ip != config_host_ip:
             fail(f"host ip mismatch: {config_path} uses {config_host_ip}, expected {host_ip}")
 
-        board_name = config_path.stem
-        if board_name in boards:
-            fail(f"duplicate board name <{board_name}>: <{config_path}> and <{boards[board_name]}>")
-        boards[board_name] = str(config_path)
-
-        device_ip = require(ini, "NETWORK_PARAMS", "Device_IP_address", config_path=config_path).strip()
-        period = parse_uint(
-            require(ini, "DATA_ACQUIZITION", "Period", config_path=config_path),
-            "DATA_ACQUIZITION.Period",
+        device_ip = str(read_alias(
+            network,
+            ("device_ip", "device_ip_address", "device_address", "Device_IP_address"),
+            "network.device_ip",
             config_path,
-        )
-        nominal_baud = parse_uint(
-            require(ini, "FDCAN_PARAMS", "Nominal_baud", config_path=config_path),
-            "FDCAN_PARAMS.Nominal_baud",
-            config_path,
-            max_value=0xFFFF,
-        )
-        data_baud = parse_uint(
-            require(ini, "FDCAN_PARAMS", "Data_baud", config_path=config_path),
-            "FDCAN_PARAMS.Data_baud",
-            config_path,
-            max_value=0xFFFF,
-        )
-        if nominal_baud not in VALID_NOMINAL_BAUDS:
-            fail(f"unsupported FDCAN_PARAMS.Nominal_baud in {config_path}: {nominal_baud}")
-        if data_baud not in VALID_DATA_BAUDS:
-            fail(f"unsupported FDCAN_PARAMS.Data_baud in {config_path}: {data_baud}")
+        )).strip()
+        if not device_ip:
+            fail(f"empty network.device_ip in {config_path}")
+        if device_ip in devices:
+            fail(f"duplicate device address <{device_ip}>: <{config_path}> and <{devices[device_ip]}>")
+        devices[device_ip] = str(config_path)
 
-        cmd.extend(
-            [
-                "--board",
-                board_name,
-                "--device-ip",
-                device_ip,
-                "--period",
-                str(period),
-            ]
-        )
-
-        enabled_buses = [False] * BUS_COUNT
-        bus_error_msg = f"invalid bus name %s in {config_path}, expected {BUS_PREFIX}0...{BUS_PREFIX}{BUS_COUNT-1}"
-        for bus_name in require(ini, "HOST_INTERFACE_MAP", config_path=config_path):
-            if not bus_name.startswith(BUS_PREFIX):
-                fail(bus_error_msg % bus_name)
-            try:
-                bus_num = int(bus_name.removeprefix(BUS_PREFIX))
-            except ValueError:
-                fail(bus_error_msg % bus_name)
-            if not (0 <= bus_num < BUS_COUNT):
-                fail(bus_error_msg % bus_name)
-
-            iface = require(ini, "HOST_INTERFACE_MAP", bus_name, config_path=config_path).strip()
-            if not iface:
-                fail(f"empty interface name for {bus_name} in {config_path}")
+        interfaces, enabled_buses = parse_bus_map(network, config_path)
+        for iface in interfaces.values():
             if iface in owners:
                 fail(f"interface overlap: {iface} is used by both {owners[iface]} and {config_path}")
-            
             owners[iface] = str(config_path)
-            enabled_buses[bus_num] = True
-            cmd.extend([f"--bus{bus_num}", iface])
 
-        rest_configs.append(
-            {
-                "name": board_name,
-                "device_ip": device_ip,
-                "payload": {
-                    "data_plane": {
-                        "host_ip": host_ip,
-                    },
-                    "frames_integration_period_ns": period,
-                    "buses": [
-                        {
-                            "bus": bus,
-                            "enabled": enabled_buses[bus],
-                            "nominal_kbit": nominal_baud if enabled_buses[bus] else 0,
-                            "data_kbit": data_baud if enabled_buses[bus] else 0,
-                        }
-                        for bus in range(BUS_COUNT)
-                    ],
+        board_config = {
+            "name": board_name,
+            "config_path": str(config_path),
+            "device_ip": device_ip,
+            "host_ip": config_host_ip,
+            "interfaces": interfaces,
+            "enabled_buses": enabled_buses,
+            "managed": "fdcan" in config,
+            "period": None,
+            "payload": None,
+        }
+
+        if "fdcan" in config:
+            fdcan = require_mapping(config["fdcan"], "fdcan", config_path)
+            period = parse_uint(
+                read_alias(fdcan, ("period_ns", "frames_integration_period_ns", "period"), "fdcan.period_ns", config_path),
+                "fdcan.period_ns",
+                config_path,
+            )
+            nominal_baud = parse_uint(
+                read_alias(fdcan, ("nominal_kbit", "nominal_baud", "Nominal_baud"), "fdcan.nominal_kbit", config_path),
+                "fdcan.nominal_kbit",
+                config_path,
+                max_value=0xFFFF,
+            )
+            data_baud = parse_uint(
+                read_alias(fdcan, ("data_kbit", "data_baud", "Data_baud"), "fdcan.data_kbit", config_path),
+                "fdcan.data_kbit",
+                config_path,
+                max_value=0xFFFF,
+            )
+            if period == 0:
+                fail(f"invalid fdcan.period_ns in {config_path}: {period}")
+            if nominal_baud not in VALID_NOMINAL_BAUDS:
+                fail(f"unsupported fdcan.nominal_kbit in {config_path}: {nominal_baud}")
+            if data_baud not in VALID_DATA_BAUDS:
+                fail(f"unsupported fdcan.data_kbit in {config_path}: {data_baud}")
+
+            board_config["period"] = period
+            board_config["payload"] = {
+                "data_plane": {
+                    "host_ip": config_host_ip,
                 },
+                "frames_integration_period_ns": period,
+                "buses": [
+                    {
+                        "bus": bus,
+                        "enabled": enabled_buses[bus],
+                        "nominal_kbit": nominal_baud if enabled_buses[bus] else 0,
+                        "data_kbit": data_baud if enabled_buses[bus] else 0,
+                    }
+                    for bus in range(BUS_COUNT)
+                ],
             }
-        )
+
+        board_configs.append(board_config)
 
     if host_ip is None:
         fail("no config files found")
 
-    interfaces = sorted(owners)
-    if not interfaces:
-        fail("no enabled CAN interfaces found in configs")
-
-    return cmd, interfaces, rest_configs
-
-
-def configure_boards_via_rest(rest_configs: list[dict]) -> None:
-    for config in rest_configs:
-        configure_board_via_rest(config, fail_on_error=True)
+    return host_ip, sorted(owners), board_configs
 
 
 def configure_board_via_rest(config: dict, fail_on_error: bool) -> bool:
@@ -277,6 +306,98 @@ def configure_board_via_rest(config: dict, fail_on_error: bool) -> bool:
     return True
 
 
+def board_runtime_compatible(config: dict, actual: dict) -> tuple[bool, str, object]:
+    if not isinstance(actual, dict):
+        return False, "missing config object", None
+
+    period = actual.get("frames_integration_period_ns")
+    if not isinstance(period, int) or period <= 0:
+        return False, "invalid frames_integration_period_ns", None
+
+    actual_buses_by_num = {bus.get("bus"): bus for bus in actual.get("buses", []) if isinstance(bus, dict)}
+    for bus_num, expected_enabled in enumerate(config["enabled_buses"]):
+        actual_bus = actual_buses_by_num.get(bus_num)
+        if actual_bus is None:
+            return False, f"bus{bus_num} missing", None
+        if bool(actual_bus.get("enabled")) != expected_enabled:
+            return False, f"bus{bus_num}.enabled mismatch", None
+
+    return True, "ok", period
+
+
+def wait_for_board_runtime_config(config: dict, timeout_seconds: float) -> int:
+    board_name = config["name"]
+    device_ip = config["device_ip"]
+    deadline = None if timeout_seconds < 0 else time.monotonic() + timeout_seconds
+    last_log_at = 0.0
+    last_reason = None
+    journal.send(f"Waiting for board-managed config on {board_name} [{device_ip}]")
+
+    while True:
+        reason = None
+        try:
+            response = requests.get(
+                f"http://{device_ip}/api/v1/status",
+                headers={"Accept": "application/json"},
+                timeout=REST_TIMEOUT_SECONDS,
+            )
+            if response.status_code == 200:
+                status = response.json()
+                if status.get("fdcan", {}).get("config_applied") is True:
+                    ok, reason, period = board_runtime_compatible(config, status.get("config"))
+                    if ok and period is not None:
+                        journal.send(f"  board config ready, period={period} ns")
+                        return period
+                    reason = f"board config not compatible yet: {reason}"
+                else:
+                    reason = "board config is not applied yet"
+            else:
+                reason = f"HTTP {response.status_code} {response.text}"
+        except (requests.RequestException, ValueError) as exc:
+            reason = f"waiting failed: {exc}"
+
+        now = time.monotonic()
+        if reason != last_reason or now - last_log_at >= 5.0:
+            journal.send(f"  {reason}")
+            last_reason = reason
+            last_log_at = now
+
+        if deadline is not None and time.monotonic() >= deadline:
+            fail(f"timed out waiting for board-managed config on {board_name} [{device_ip}]")
+        time.sleep(REST_RETRY_DELAY_SECONDS)
+
+
+def configure_or_wait_for_boards(board_configs: list[dict], timeout_seconds: float) -> None:
+    for config in board_configs:
+        if config["managed"]:
+            configure_board_via_rest(config, fail_on_error=True)
+        else:
+            config["period"] = wait_for_board_runtime_config(config, timeout_seconds)
+
+
+def build_executable_args(host_ip: str, board_configs: list[dict]) -> list[str]:
+    cmd = [ETHERNET_CAN_EXECUTABLE, "--host-ip", host_ip]
+
+    for config in board_configs:
+        if config["period"] is None:
+            fail(f"internal error: missing period for {config['name']}")
+
+        cmd.extend(
+            [
+                "--board",
+                config["name"],
+                "--device-ip",
+                config["device_ip"],
+                "--period",
+                str(config["period"]),
+            ]
+        )
+        for bus_num, iface in sorted(config["interfaces"].items()):
+            cmd.extend([f"--bus{bus_num}", iface])
+
+    return cmd
+
+
 def config_matches(desired: dict, actual: dict) -> tuple[bool, str]:
     if not isinstance(actual, dict):
         return False, "missing config object"
@@ -299,7 +420,6 @@ def config_matches(desired: dict, actual: dict) -> tuple[bool, str]:
 
 
 def healthcheck_board(config: dict) -> tuple[bool, str]:
-    board_name = config["name"]
     device_ip = config["device_ip"]
     try:
         response = requests.get(
@@ -315,13 +435,22 @@ def healthcheck_board(config: dict) -> tuple[bool, str]:
     except ValueError as exc:
         return False, f"invalid status json: {exc}"
 
-    matches, reason = config_matches(config["payload"], status.get("config"))
-    if not matches:
+    if config["managed"]:
+        matches, reason = config_matches(config["payload"], status.get("config"))
+        if not matches:
+            return False, reason
+        return True, "ok"
+
+    if status.get("fdcan", {}).get("config_applied") is not True:
+        return False, "board config is not applied"
+
+    ok, reason, _period = board_runtime_compatible(config, status.get("config"))
+    if not ok:
         return False, reason
     return True, "ok"
 
 
-def run_host_with_healthcheck(cmd: list[str], rest_configs: list[dict]) -> int:
+def run_host_with_healthcheck(cmd: list[str], board_configs: list[dict]) -> int:
     try:
         healthcheck_hz = float(HEALTHCHECK_HZ)
     except ValueError:
@@ -336,7 +465,7 @@ def run_host_with_healthcheck(cmd: list[str], rest_configs: list[dict]) -> int:
         fail(f"invalid ETHERNET_CAN_HEALTHCHECK_MAX_FAILURES: {HEALTHCHECK_MAX_FAILURES}")
 
     process = subprocess.Popen(cmd)
-    failure_counts = {config["name"]: 0 for config in rest_configs}
+    failure_counts = {config["name"]: 0 for config in board_configs}
     interval = 1.0 / healthcheck_hz
 
     try:
@@ -344,7 +473,7 @@ def run_host_with_healthcheck(cmd: list[str], rest_configs: list[dict]) -> int:
             time.sleep(interval)
             if process.poll() is not None:
                 break
-            for config in rest_configs:
+            for config in board_configs:
                 board_name = config["name"]
                 ok, reason = healthcheck_board(config)
                 if ok:
@@ -359,7 +488,7 @@ def run_host_with_healthcheck(cmd: list[str], rest_configs: list[dict]) -> int:
                     f"({failure_counts[board_name]}/{max_failures + 1}): {reason}"
                 )
 
-                if failure_counts[board_name] > max_failures:
+                if failure_counts[board_name] > max_failures and config["managed"]:
                     journal.send(f"Healthcheck reconfiguring {board_name} [{config['device_ip']}]: {reason}")
                     if configure_board_via_rest(config, fail_on_error=False):
                         failure_counts[board_name] = 0
@@ -372,8 +501,13 @@ def run_host_with_healthcheck(cmd: list[str], rest_configs: list[dict]) -> int:
 
 def main() -> int:
     args = parse_args()
+    try:
+        config_wait_timeout = float(args.config_wait_timeout)
+    except ValueError:
+        fail(f"invalid config wait timeout: {args.config_wait_timeout}")
+
     config_paths = discover_configs(args)
-    cmd, interfaces, rest_configs = build_executable_args(config_paths)
+    host_ip, interfaces, board_configs = load_board_configs(config_paths)
 
     journal.send("Configs:")
     for path in config_paths:
@@ -383,13 +517,14 @@ def main() -> int:
     for iface in interfaces:
         journal.send(f"  {iface}")
 
+    configure_or_wait_for_boards(board_configs, config_wait_timeout)
     sync_interfaces(interfaces)
-    configure_boards_via_rest(rest_configs)
+    cmd = build_executable_args(host_ip, board_configs)
 
     journal.send("Launching:")
     journal.send(f"  {' '.join(cmd)}")
 
-    return run_host_with_healthcheck(cmd, rest_configs)
+    return run_host_with_healthcheck(cmd, board_configs)
 
 
 if __name__ == "__main__":

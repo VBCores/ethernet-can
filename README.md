@@ -17,24 +17,22 @@ Solder all CAN-FD jumper pads on the back side of the board to enable terminatio
 3. Flash BOTH H7 and G4. See named connectors on the board
     - On the G4 chip, set Option Byte `NSWBoot0` to `0` (unchecked in `OB -> Option Bytes`).
 
-### 3. Optional board SD card
+### 3. Board SD card
 
-The SD card is optional. Use it only when you need to override board identity or force explicit static/P2P addressing.
+A FAT SD card is required for persistent runtime config and for REST/panel config writes. The board reads JSON files from the SD-card root:
+
+- `config.json`: user-owned config and locked fields. Firmware never overwrites it.
+- `runtime.json`: last applied full runtime config. Firmware creates/updates it after successful REST or panel config.
 
 1. Format an SD card as `FAT16`.
-2. Put `ethernet.ini` into the SD-card root directory.
-3. Use [`extra/SD-card/ethernet.ini`](./extra/SD-card/ethernet.ini) as the template.
+2. Put `config.json` into the SD-card root directory when you need identity, network, or locked FDCAN settings.
+3. Use [`extra/SD-card/config.json`](./extra/SD-card/config.json) as the minimal template.
 
-Supported optional fields:
+`config.json` may contain a `network` object with `hostname`, `mac_address`, `dhcp`, `host_ip`, `device_ip`, `netmask`, and `gateway`. If `device_ip` is present, firmware disables DHCP. If `mac_address` is omitted, firmware derives a locally administered MAC from the H7 hardware UID.
 
-- `[device] hostname`: mDNS hostname, default `ethernetcan` for `ethernetcan.local`.
-- `[device] mac_address`: optional board MAC override. If omitted, firmware derives a locally administered MAC from the H7 hardware UID.
-- `[network] dhcp`: optional boolean, default `true`.
-- `[network] host_ip`, `device_ip`, `netmask`, `gateway`: explicit static/P2P network values. If `device_ip` is present, firmware disables DHCP.
+For board-managed setups, `config.json` can also contain the same runtime fields returned by `GET /api/v1/config`: `data_plane.host_ip`, `frames_integration_period_ns`, and `buses`. Any explicitly present runtime field is locked; a conflicting `PUT /api/v1/config` returns `409 Conflict`.
 
-Legacy `[ethernet]` fields are still accepted for older SD cards, including `hostname`, `mac_address`, `host_ip`, and `device_ip` arrays.
-
-The board exposes a compact web panel at `http://<device>/panel`. The same firmware status is available as JSON at `GET /api/v1/status`; it includes network state, reset reason, IWDG health, queue drops, and H7 bus-off counters.
+The board exposes a compact web panel at `http://<device>/panel`. `GET /api/v1/status` includes network state, FDCAN state, reset reason, IWDG health, queue drops, H7 bus-off counters, and SD persistence state.
 
 ### 4. Host network configuration
 
@@ -93,36 +91,50 @@ Installed files:
 - `/opt/voltbro/ethernet-can/bin/start_ethernet_can.py`
 - `/opt/voltbro/ethernet-can/systemd/ethernet-can.service`
 
-Note that `.ini` host config files are NOT installed automatically - this step is covered next.
+Host JSON config files are not installed automatically - this step is covered next.
 
-### 6. Host INI configuration
+### 6. Host JSON configuration
 
-Use [`extra/configs/example.ini`](./extra/configs/example.ini) as the runtime template.
+Use [`extra/configs/example.json`](./extra/configs/example.json) as the runtime template.
 
-Each `.ini` describes one Ethernet-CAN board. The `start_ethernet_can.py` launcher scans all `*.ini` files, validates them, creates the required VCAN interfaces, applies the board config via HTTP REST, and starts one shared host process with all boards passed on the command line. `Device_IP_address` can be either an IPv4 address or a hostname such as `ethernetcan.local`. Literal IPv4 addresses are used directly. Hostnames are resolved at startup and re-resolved if UDP arrives from an unknown source, so a board can recover after reboot if DHCP gives the same hostname a new address.
+Each `.json` describes one Ethernet-CAN board. The launcher scans all `*.json` files, validates them, creates the required VCAN interfaces, and starts one shared host process with all boards passed on the command line. `network.device_ip` can be either an IPv4 address or a hostname such as `ethernetcan.local`. Literal IPv4 addresses are used directly. Hostnames are resolved at startup and re-resolved if UDP arrives from an unknown source, so a board can recover after reboot if DHCP gives the same hostname a new address.
 
-`[HOST_INTERFACE_MAP]` defines both bus enablement and Linux interface mapping. A bus is enabled if it is present in that section. Example:
+Top-level host JSON has mandatory `network` and optional `fdcan`. `network.host_interface_map` defines both bus enablement and Linux interface mapping. A bus is enabled if it is present in that object. Example:
 
-```ini
-[HOST_INTERFACE_MAP]
-bus0 = vcan1.0
-bus1 = vcan1.1
-bus2 = vcan1.2
+```json
+{
+  "network": {
+    "host_ip": "192.168.2.2",
+    "device_ip": "ethernetcan.local",
+    "host_interface_map": {
+      "bus0": "vcan1.0",
+      "bus1": "vcan1.1",
+      "bus2": "vcan1.2"
+    }
+  },
+  "fdcan": {
+    "period_ns": 10000000,
+    "nominal_kbit": 1000,
+    "data_kbit": 8000
+  }
+}
 ```
 
 In this example, only buses `0`, `1`, and `2` are enabled for that board.
 
+If `fdcan` is present, the launcher owns the board runtime config: it sends `PUT /api/v1/config` before starting the UDP data plane and reapplies it on healthcheck mismatch. If `fdcan` is absent, the launcher does not configure the board. It waits until the board reports an applied runtime config, takes `frames_integration_period_ns` from the board, and starts the host binary.
+
 > Simplest plan:
 >
-> - Copy [`extra/configs/example.ini`](./extra/configs/example.ini) to `/opt/voltbro/ethernet-can/`
+> - Copy [`extra/configs/example.json`](./extra/configs/example.json) to `/opt/voltbro/ethernet-can/`
 > - Rename however you see fit
 > - Update configuration: addresses, bitrate, and host CAN interface map
 >
->> Dev note: as mentioned, `.ini` configs are NOT parsed by host binary and are used by launcher. The host binary is only the UDP data plane; runtime FDCAN config is applied by the launcher through `PUT /api/v1/config`. You can start host binary directly by passing required CLI parameters yourself, but then you must configure the board separately.
+>> Dev note: JSON configs are parsed only by the Python launcher. The host binary is only the UDP data plane. You can start it directly by passing required CLI parameters yourself, but then you must configure the board separately.
 
 Prefer storing configuration files in `/opt/voltbro/ethernet-can`, otherwise update environment variables accordingly (see [`extra/ethernet-can.service`](./extra/ethernet-can.service) for env params).
 
-The launcher keeps watching each board while the host data plane is running. It polls `GET /api/v1/status` at `ETHERNET_CAN_HEALTHCHECK_HZ` and compares the reported runtime config with the requested `.ini` config. If a board fails to answer or reports a mismatching config more than `ETHERNET_CAN_HEALTHCHECK_MAX_FAILURES` times in a row, the launcher logs the reason and sends `PUT /api/v1/config` again. Defaults are `1.0` Hz and `3` tolerated consecutive failures.
+The launcher keeps watching each board while the host data plane is running. It polls `GET /api/v1/status` at `ETHERNET_CAN_HEALTHCHECK_HZ`. For host-managed configs, it compares the reported runtime config with the requested JSON and sends `PUT /api/v1/config` again after repeated mismatch or no-response failures. For board-managed configs, it only checks that a compatible applied config is still reported. Defaults are `1.0` Hz and `3` tolerated consecutive failures. `ETHERNET_CAN_CONFIG_WAIT_TIMEOUT_SECONDS=-1` makes listener-only startup wait forever for board config.
 
 Manual start for debugging:
 
@@ -149,7 +161,7 @@ systemctl status ethernet-can.service
 journalctl -u ethernet-can.service -f
 ```
 
-After startup, the launcher creates and configures the interfaces referenced by `[HOST_INTERFACE_MAP]`. For example, with the current template this should work (may be silent if no data on CAN bus, but should NOT crash/exit):
+After startup, the launcher creates and configures the interfaces referenced by `network.host_interface_map`. For example, with the current template this should work (may be silent if no data on CAN bus, but should NOT crash/exit):
 
 ```bash
 candump vcan1.0
