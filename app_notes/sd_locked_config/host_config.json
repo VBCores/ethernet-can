@@ -1,0 +1,9 @@
+{
+  "network": {
+    "host_ip": "192.168.2.2",
+    "device_ip": "ethernetcan-locked.local",
+    "host_interface_map": {
+      "bus0": "vcan1.0"
+    }
+  }
+}

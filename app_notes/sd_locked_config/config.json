@@ -1,0 +1,18 @@
+{
+  "network": {
+    "hostname": "ethernetcan-locked.local",
+    "dhcp": true
+  },
+  "data_plane": {
+    "host_ip": "192.168.2.2"
+  },
+  "frames_integration_period_ns": 10000000,
+  "buses": [
+    {"bus": 0, "enabled": true, "nominal_kbit": 1000, "data_kbit": 8000},
+    {"bus": 1, "enabled": false},
+    {"bus": 2, "enabled": false},
+    {"bus": 3, "enabled": false},
+    {"bus": 4, "enabled": false},
+    {"bus": 5, "enabled": false}
+  ]
+}
