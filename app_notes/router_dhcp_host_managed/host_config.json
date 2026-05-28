@@ -1,0 +1,14 @@
+{
+  "network": {
+    "host_ip": "192.168.2.2",
+    "device_ip": "ethernetcan1.local",
+    "host_interface_map": {
+      "bus0": "vcan1.0"
+    }
+  },
+  "fdcan": {
+    "period_ns": 10000000,
+    "nominal_kbit": 1000,
+    "data_kbit": 8000
+  }
+}

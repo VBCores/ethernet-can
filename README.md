@@ -4,71 +4,126 @@
 
 ![Ethernet-CAN](./extra/images/ethernet-can.png)
 
-## Setup
+## What This Device Is
 
-### 1. Hardware
+Ethernet-CAN is an IP device with six logical CAN-FD buses. The board has two MCUs:
 
-Solder all CAN-FD jumper pads on the back side of the board to enable termination on each channel. Without proper termination, CAN communication will not work.
+- STM32H7 owns Ethernet, HTTP REST, the web panel, SD-card config, and CAN buses `0..2`.
+- STM32G4 is connected to H7 over SPI and owns CAN buses `3..5`.
 
-### 2. Firmware
+The board uses normal IP networking. By default it can get an address from DHCP and is reachable by an mDNS hostname such as `ethernetcan.local`. If your network does not use DHCP, or if you need fixed identity settings, put `config.json` on the SD card and set static IP, hostname, MAC, netmask, gateway, or other network fields there.
 
-1. Use STM32CubeProgrammer with [ST-Link](https://vbcores.tilda.ws/products/vb-stlink) for flashing.
-2. Firmware binaries: download latest from [releases](https://github.com/VBCores/ethernet-can/releases) for BOTH H7 and G4
-3. Flash BOTH H7 and G4. See named connectors on the board
-    - On the G4 chip, set Option Byte `NSWBoot0` to `0` (unchecked in `OB -> Option Bytes`).
+The board exposes:
 
-### 3. Configure board SD card
+- `GET /api/v1/status`: network state, FDCAN state, counters, reset/watchdog diagnostics, SD persistence state.
+- `GET /api/v1/config`: currently applied runtime config.
+- `PUT /api/v1/config`: apply runtime config and save it as `runtime.json`.
+- `/panel`: small web control panel for status and config.
 
-1. Format an SD card as `FAT16`.
-2. Put `ethernet.ini` into the SD-card root directory.
-3. Use [`extra/SD-card/ethernet.ini`](./extra/SD-card/ethernet.ini) as the template.
+CAN data itself uses UDP. HTTP is only the config/status plane.
 
-### 4. Host network configuration
+## Host Service Model
 
-Ethernet-CAN is an IP device that communicates over UDP. It reads a static device IP from SD card (`ethernet.ini`) and sends data to the static host IP. For reliable operation, ensure these 3 conditions:
+The Linux host service creates the data channel between the board and SocketCAN. It needs:
 
-1. Host and Ethernet-CAN are in the same network and have a direct/simple route between them.
-2. Ethernet-CAN has a unique static IP (for example, not reused by DHCP).
-3. Host IP never changes
+- one host IP address;
+- one board address, either literal IPv4 or hostname;
+- a map from board bus numbers to Linux CAN interface names.
 
-Host-side bridge supports multiple Ethernet-CAN boards with different device IPs behind one shared host IP. Boards are distinguished on the host by UDP source IP.
+The Python launcher reads host JSON files, prepares VCAN interfaces, optionally configures the board through REST, and starts the C++ data-plane process. The C++ process does not parse JSON and does not configure the board; it only forwards UDP CAN frames to and from SocketCAN.
 
-There are many valid network topologies. For examples, see "[App Notes](./app_notes)". This guide covers only the simplest direct point-to-point setup:
+The host supports multiple boards behind one shared host IP. Each board gets its own host JSON file, and incoming UDP packets are assigned to boards by source IP.
 
-#### Straightforward P2P network configuration
+## FDCAN Config Ownership
 
-1. Connect host and Ethernet-CAN directly with an Ethernet cable.
-2. Find your physical Ethernet interface name using `ip link` (for example `eth0`).
-3. Copy [`extra/10-ethernet-can.yaml`](./extra/10-ethernet-can.yaml) to `/etc/netplan`:
-   `sudo install -m 0644 ./extra/10-ethernet-can.yaml /etc/netplan/10-ethernet-can.yaml`
-4. Edit `/etc/netplan/10-ethernet-can.yaml`:
-   - Replace `INTERFACE_NAME` with your interface name.
-   - Keep `10.0.0.1/24` unless you intentionally changed host/device IPs in config files.
-5. Run `sudo netplan try`, then `sudo netplan apply`.
-6. Run `ip addr show INTERFACE_NAME` and verify the address is assigned.
-7. Run `ping 10.0.0.2` (or your configured device IP). Ethernet-CAN should respond.
+Choose one ownership style per board.
 
-### 5. Host software installation
+| Style | Where the FDCAN config lives | Host JSON contains `fdcan` | Typical use |
+| --- | --- | --- | --- |
+| Host-managed | Host JSON | Yes | Easiest to edit from Linux/systemd config. The launcher sends REST config on startup and reapplies it on healthcheck mismatch. |
+| Web/panel-managed | Board `runtime.json` | No | User configures the board once through `/panel`; after that the host only starts the listener. |
+| SD-locked | SD `config.json` | No | Fixed board-owned config. Fields explicitly present in `config.json` are locked; conflicting REST config is rejected. |
 
-> This repository is intended to be built and installed on a Linux embedded host that controls the Ethernet-CAN board.
+The SD card uses two files in the root directory:
 
-Install required tools and runtime components:
+- `config.json`: user-owned file. Firmware reads it and never overwrites it.
+- `runtime.json`: last successfully applied full runtime config. Firmware creates and updates it after REST or panel config.
+
+If `runtime.json` is valid, the board applies it at boot. If it is missing, the board tries to build a runtime config from defaults plus locked fields in `config.json`. If the result is incomplete, REST and `/panel` still start, but FDCAN remains unapplied until a config arrives.
+
+Old host INI and SD INI configs are no longer used.
+
+## Recommended First Setup
+
+For most users:
+
+1. Put a minimal SD `config.json` on the board with a hostname and DHCP enabled.
+2. Let the router give the board an IP address.
+3. Use the board hostname as `network.device_ip` in host JSON.
+4. Put `fdcan` in host JSON so the host service owns FDCAN bitrate and period.
+
+See [Router DHCP Host Managed](./app_notes/router_dhcp_host_managed/Router%20DHCP%20Host%20Managed.md) for the complete example.
+
+Use the other app notes when you need direct point-to-point static addressing, web-panel config, SD-locked config, or multiple boards.
+
+## Hardware
+
+Solder the CAN-FD termination jumper pads on the back side of the board as required by your CAN network. Without proper termination, CAN communication will not work.
+
+Before powering a CAN network, measure resistance between `CANH` and `CANL`. It should be about `60 Ohm` when two `120 Ohm` terminators are present. If it is `120 Ohm`, one terminator is missing.
+
+CAN uses two signal wires, but stable operation also requires a shared ground reference between all devices. Recommended wire colors are `CANH` yellow, `CANL` green, ground black.
+
+## Firmware
+
+1. Use STM32CubeProgrammer with [ST-Link](https://vbcores.tilda.ws/products/vb-stlink).
+2. Flash both H7 and G4 firmware images from the release package.
+3. On the G4 chip, set Option Byte `NSWBoot0` to `0` (unchecked in `OB -> Option Bytes`).
+
+The H7 firmware starts network, REST API, and `/panel` even if no FDCAN runtime config is available yet.
+
+## Board SD Card
+
+Format the SD card as FAT and put JSON files in the root directory.
+
+Minimal `config.json`:
+
+```json
+{
+  "network": {
+    "hostname": "ethernetcan.local",
+    "dhcp": true
+  }
+}
+```
+
+Network fields accepted in `config.json`:
+
+- `hostname`: mDNS hostname, with or without `.local`.
+- `dhcp`: `true` by default.
+- `host_ip`: host UDP destination IP used by board data plane.
+- `device_ip`, `netmask`, `gateway`: static board addressing. If `device_ip` is present, DHCP is disabled.
+- `mac_address`: optional board MAC override. If omitted, firmware derives a locally administered MAC from the H7 hardware UID.
+- `wake_on_lan_mac` or `wol_mac`: optional Wake-on-LAN target.
+
+For locked FDCAN config, `config.json` may also contain runtime fields from `GET /api/v1/config`: `data_plane.host_ip`, `frames_integration_period_ns`, and `buses`. Any explicitly present runtime field is treated as locked.
+
+## Host Software Installation
+
+This repository is intended to be built and installed on the Linux host that controls one or more Ethernet-CAN boards.
+
+Install tools and runtime components:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake libboost-program-options-dev python3 python3-systemd can-utils iproute2 kmod
+sudo apt install -y build-essential cmake libboost-program-options-dev python3 python3-systemd python3-requests python3-tenacity can-utils iproute2 kmod
 ```
 
-Clone with submodules:
+Clone, build, and install:
 
 ```bash
 git clone --recurse-submodules https://github.com/VBCores/ethernet-can
 cd ethernet-can
-```
-
-Build and install:
-
-```bash
 cmake -S . -B build
 cmake --build build
 sudo cmake --install build
@@ -80,46 +135,42 @@ Installed files:
 - `/opt/voltbro/ethernet-can/bin/start_ethernet_can.py`
 - `/opt/voltbro/ethernet-can/systemd/ethernet-can.service`
 
-Note that `.ini` host config files are NOT installed automatically - this step is covered next.
+Host JSON config files are not installed automatically. Put them in `/opt/voltbro/ethernet-can` or set `ETHERNET_CAN_CONFIGS_DIR` in the systemd unit.
 
-### 6. Host INI configuration
+## Host JSON Configuration
 
-Use [`extra/configs/example.ini`](./extra/configs/example.ini) as the runtime template.
+Use [`extra/configs/example.json`](./extra/configs/example.json) as a host-managed template and [`extra/configs/example-board-managed.json`](./extra/configs/example-board-managed.json) as a listener-only template.
 
-Each `.ini` describes one Ethernet-CAN board. The `start_ethernet_can.py` launcher scans all `*.ini` files, validates them, creates the required VCAN interfaces, and starts one shared host process with all boards passed on the command line.
+Each host JSON file describes one board. Top-level keys:
 
-`[HOST_INTERFACE_MAP]` defines both bus enablement and Linux interface mapping. A bus is enabled if it is present in that section. Example:
+- `network`: required.
+- `fdcan`: optional. Its presence means host-managed FDCAN config.
 
-```ini
-[HOST_INTERFACE_MAP]
-bus0 = vcan1.0
-bus1 = vcan1.1
-bus2 = vcan1.2
-```
+`network` fields:
 
-In this example, only buses `0`, `1`, and `2` are enabled for that board.
+- `host_ip`: Linux host IP used for the UDP data plane.
+- `device_ip`: board address, either IPv4 or hostname such as `ethernetcan.local`.
+- `host_interface_map`: maps `bus0`..`bus5` to Linux CAN interface names. A bus is enabled on the host when it is present in this map.
 
-> Simplest plan:
->
-> - Copy [`extra/configs/example.ini`](./extra/configs/example.ini) to `/opt/voltbro/ethernet-can/`
-> - Rename however you see fit
-> - Update configuration: addresses, bitrate, and host CAN interface map
->
->> Dev note: as mentioned, `.ini` configs are NOT parsed by host binary and are used by launcher. You can start host binary directly by passing required CLI parameters yourself. It is not recommended, but if you have some sort of dynamic network, you **can** do it and/or write custom launcher.
+`fdcan` fields:
 
-Prefer storing configuration files in `/opt/voltbro/ethernet-can`, otherwise update environment variables accordingly (see [`extra/ethernet-can.service`](./extra/ethernet-can.service) for env params).
+- `period_ns`: UDP frame integration period in nanoseconds.
+- `nominal_kbit`: FDCAN nominal bitrate.
+- `data_kbit`: FDCAN data bitrate. Use `0` for classic CAN mode.
 
-Manual start for debugging:
+Manual debug start:
 
 ```bash
 sudo /opt/voltbro/ethernet-can/bin/start_ethernet_can.py
 ```
 
-### 7. Install and enable systemd unit
+The launcher polls `GET /api/v1/status` while the host data plane is running. In host-managed mode it compares the board config with the expected JSON and sends `PUT /api/v1/config` again after repeated mismatch or no-response failures. In listener-only mode it checks that a compatible board-applied config is still present.
 
-> This is the last step. You can always undo/update this, but it helps to re-check all configs, unit files, etc. in `/opt/voltbro/ethernet-can` at this point to avoid confusion
+`ETHERNET_CAN_CONFIG_WAIT_TIMEOUT_SECONDS=-1` makes listener-only startup wait forever for a board config.
 
-Install the unit to system from the installed location:
+## Systemd Service
+
+Install the unit after host JSON files are in place:
 
 ```bash
 sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can.service /etc/systemd/system/ethernet-can.service
@@ -127,21 +178,42 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ethernet-can.service
 ```
 
-Check status/logs:
+Check service logs:
 
 ```bash
 systemctl status ethernet-can.service
 journalctl -u ethernet-can.service -f
 ```
 
-After startup, the launcher creates and configures the interfaces referenced by `[HOST_INTERFACE_MAP]`. For example, with the current template this should work (may be silent if no data on CAN bus, but should NOT crash/exit):
+After startup, the launcher creates and configures interfaces from `network.host_interface_map`. Check data with:
 
 ```bash
 candump vcan1.0
 ```
 
-## Troubleshooting notes
+## App Notes
 
-- Before powering any CAN network, measure resistance between `CANH` and `CANL` with a multimeter. It should be about `60 Ohm` (two parallel `120 Ohm` terminators, one at each end of the line). If it is `120 Ohm`, one terminator is missing. Other values usually indicate a wiring/assembly issue.
-- CAN uses two signal wires, but stable operation also requires a shared ground reference between all devices. If Ethernet-CAN and the target device are powered from different supplies, connect grounds explicitly.
-- Recommended wire colors: `CANH` yellow, `CANL` green, ground black.
+Concrete setups live in [app_notes](./app_notes):
+
+- Router DHCP with host-managed FDCAN config.
+- Direct point-to-point static network.
+- Web-panel runtime config.
+- SD-locked board config.
+- Multiple boards.
+- Mixed host-managed and board-managed boards.
+
+## Build Notes For Firmware Developers
+
+The host software is Linux-native. The firmware is under `STM32H7-ETH-LWIP` and `STM32G4-SPI-CAN`.
+
+The H7 firmware is built around STM32Cube and lwIP in a superloop, without an RTOS. Ethernet and the first three FDCAN buses live on H7. The companion G4 is configured by H7 over SPI and handles the remaining buses. Be careful with H7 memory placement, DMA buffers, MPU/cache settings, and linker scripts.
+
+The default H7 build path is CMake. If using STM32CubeMX, keep user code blocks and verify that custom source files remain in the project after regeneration.
+
+## Troubleshooting
+
+- `device_ip` may be a hostname. The host uses normal Linux `getaddrinfo()`, so mDNS resolution depends on host resolver setup, usually `libnss-mdns`/Avahi.
+- If `/panel` opens but CAN does not move, check `GET /api/v1/status`: `fdcan.config_applied`, bus state, queue drops, and SD persistence errors.
+- If host-managed startup fails with HTTP `409`, SD `config.json` contains locked fields that conflict with host JSON.
+- If listener-only startup waits forever, configure the board through `/panel` or provide `runtime.json`/locked SD config.
+- If frames arrive on the wire but not in `candump`, check `network.host_interface_map`, interface names, and `candump` target.

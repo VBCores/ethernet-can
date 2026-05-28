@@ -1,0 +1,14 @@
+{
+  "network": {
+    "host_ip": "192.168.2.2",
+    "device_ip": "ethernetcan.local",
+    "host_interface_map": {
+      "bus0": "vcan1.0",
+      "bus1": "vcan1.1",
+      "bus2": "vcan1.2",
+      "bus3": "vcan1.3",
+      "bus4": "vcan1.4",
+      "bus5": "vcan1.5"
+    }
+  }
+}

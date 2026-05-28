@@ -2,6 +2,9 @@ var/
 ethernet-can
 !build/.gitkeep
 
+# VSCode
+browse.vc.db*
+
 ### General
 
 .DS_Store
