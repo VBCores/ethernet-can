@@ -44,6 +44,8 @@ Choose one ownership style per board.
 | Web/panel-managed | Board `runtime.json` | No | User configures the board once through `/panel`; after that the host only starts the listener. |
 | SD-locked | SD `config.json` | No | Fixed board-owned config. Fields explicitly present in `config.json` are locked; conflicting REST config is rejected. |
 
+> SD card is **optional**. If you run EthernetCAN without an SD card, then you MUST use the host-managed workflow: the board will only save runtime config in RAM.
+
 The SD card uses two files in the root directory:
 
 - `config.json`: user-owned file. Firmware reads it and never overwrites it.
