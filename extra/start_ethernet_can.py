@@ -236,8 +236,6 @@ def load_board_configs(config_paths: list[Path]) -> tuple[str, list[str], list[d
                 config_path,
                 max_value=0xFFFF,
             )
-            if period == 0:
-                fail(f"invalid fdcan.period_ns in {config_path}: {period}")
             if nominal_baud not in VALID_NOMINAL_BAUDS:
                 fail(f"unsupported fdcan.nominal_kbit in {config_path}: {nominal_baud}")
             if data_baud not in VALID_DATA_BAUDS:
@@ -311,7 +309,7 @@ def board_runtime_compatible(config: dict, actual: dict) -> tuple[bool, str, obj
         return False, "missing config object", None
 
     period = actual.get("frames_integration_period_ns")
-    if not isinstance(period, int) or period <= 0:
+    if not isinstance(period, int) or period < 0:
         return False, "invalid frames_integration_period_ns", None
 
     actual_buses_by_num = {bus.get("bus"): bus for bus in actual.get("buses", []) if isinstance(bus, dict)}
@@ -427,7 +425,11 @@ def config_matches(desired: dict, actual: dict) -> tuple[bool, str]:
         actual_bus = actual_buses_by_num.get(bus_num)
         if actual_bus is None:
             return False, f"bus{bus_num} missing"
-        for field in ("enabled", "nominal_kbit", "data_kbit"):
+        if actual_bus.get("enabled") != desired_bus["enabled"]:
+            return False, f"bus{bus_num}.enabled mismatch"
+        if not desired_bus["enabled"]:
+            continue
+        for field in ("nominal_kbit", "data_kbit"):
             if actual_bus.get(field) != desired_bus[field]:
                 return False, f"bus{bus_num}.{field} mismatch"
 

@@ -136,6 +136,7 @@ Installed files:
 - `/opt/voltbro/ethernet-can/bin/ethernet-can`
 - `/opt/voltbro/ethernet-can/bin/start_ethernet_can.py`
 - `/opt/voltbro/ethernet-can/systemd/ethernet-can.service`
+- `/opt/voltbro/ethernet-can/systemd/ethernet-can-mdns.conf`
 
 Host JSON config files are not installed automatically. Put them in `/opt/voltbro/ethernet-can` or set `ETHERNET_CAN_CONFIGS_DIR` in the systemd unit.
 
@@ -156,7 +157,7 @@ Each host JSON file describes one board. Top-level keys:
 
 `fdcan` fields:
 
-- `period_ns`: UDP frame integration period in nanoseconds.
+- `period_ns`: UDP frame integration period in nanoseconds. Use `0` for immediate flush.
 - `nominal_kbit`: FDCAN nominal bitrate.
 - `data_kbit`: FDCAN data bitrate. Use `0` for classic CAN mode.
 
@@ -175,7 +176,10 @@ The launcher polls `GET /api/v1/status` while the host data plane is running. In
 Install the unit after host JSON files are in place:
 
 ```bash
+sudo install -d -m 0755 /etc/systemd/resolved.conf.d
+sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can-mdns.conf /etc/systemd/resolved.conf.d/ethernet-can-mdns.conf
 sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can.service /etc/systemd/system/ethernet-can.service
+sudo systemctl restart systemd-resolved
 sudo systemctl daemon-reload
 sudo systemctl enable --now ethernet-can.service
 ```
@@ -185,6 +189,13 @@ Check service logs:
 ```bash
 systemctl status ethernet-can.service
 journalctl -u ethernet-can.service -f
+```
+
+The host service resolves `network.device_ip` through the Linux resolver. For `.local` names, keep `MulticastDNS=yes` enabled in `systemd-resolved` and verify name resolution with:
+
+```bash
+resolvectl mdns
+getent hosts ethernetcan.local
 ```
 
 After startup, the launcher creates and configures interfaces from `network.host_interface_map`. Check data with:

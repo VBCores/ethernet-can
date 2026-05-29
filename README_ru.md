@@ -136,6 +136,7 @@ sudo cmake --install build
 - `/opt/voltbro/ethernet-can/bin/ethernet-can`
 - `/opt/voltbro/ethernet-can/bin/start_ethernet_can.py`
 - `/opt/voltbro/ethernet-can/systemd/ethernet-can.service`
+- `/opt/voltbro/ethernet-can/systemd/ethernet-can-mdns.conf`
 
 Host JSON configs автоматически не устанавливаются. Положите их в `/opt/voltbro/ethernet-can` или задайте `ETHERNET_CAN_CONFIGS_DIR` в systemd unit.
 
@@ -156,7 +157,7 @@ Host JSON configs автоматически не устанавливаются
 
 Поля `fdcan`:
 
-- `period_ns`: период интеграции UDP frames в наносекундах.
+- `period_ns`: период интеграции UDP frames в наносекундах. Значение `0` включает immediate flush.
 - `nominal_kbit`: nominal bitrate FDCAN.
 - `data_kbit`: data bitrate FDCAN. Значение `0` включает classic CAN mode.
 
@@ -175,7 +176,10 @@ Launcher опрашивает `GET /api/v1/status`, пока работает ho
 Установите unit после того, как host JSON уже лежит на месте:
 
 ```bash
+sudo install -d -m 0755 /etc/systemd/resolved.conf.d
+sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can-mdns.conf /etc/systemd/resolved.conf.d/ethernet-can-mdns.conf
 sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can.service /etc/systemd/system/ethernet-can.service
+sudo systemctl restart systemd-resolved
 sudo systemctl daemon-reload
 sudo systemctl enable --now ethernet-can.service
 ```
@@ -185,6 +189,13 @@ sudo systemctl enable --now ethernet-can.service
 ```bash
 systemctl status ethernet-can.service
 journalctl -u ethernet-can.service -f
+```
+
+Host service резолвит `network.device_ip` через Linux resolver. Для `.local` имен держите `MulticastDNS=yes` включенным в `systemd-resolved` и проверяйте резолв так:
+
+```bash
+resolvectl mdns
+getent hosts ethernetcan.local
 ```
 
 После старта launcher создает и настраивает интерфейсы из `network.host_interface_map`. Проверить данные можно так:
