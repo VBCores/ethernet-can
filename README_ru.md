@@ -15,9 +15,9 @@ Ethernet-CAN - это IP-устройство с шестью логически
 
 Плата предоставляет:
 
-- `GET /api/v1/status`: сеть, FDCAN, счетчики, reset/watchdog diagnostics, состояние SD persistence.
+- `GET /api/v1/status`: сеть, FDCAN, счетчики, reset/watchdog diagnostics и состояние persistence.
 - `GET /api/v1/config`: текущий примененный runtime config.
-- `PUT /api/v1/config`: применить runtime config и сохранить его как `runtime.json`.
+- `PUT /api/v1/config`: проверить и применить runtime config, затем сохранить одну запись с CRC в зарезервированной внутренней Flash H7.
 - `/panel`: простая веб-панель статуса и настройки.
 
 Сами CAN-данные идут по UDP. HTTP используется только для конфигурации и статуса.
@@ -41,17 +41,16 @@ Host поддерживает несколько плат за одним общ
 | Подход | Где живет FDCAN config | В host JSON есть `fdcan` | Когда использовать |
 | --- | --- | --- | --- |
 | Host-managed | Host JSON | Да | Самый простой вариант для правки через Linux/systemd config. Launcher отправляет REST config при старте и переотправляет его при healthcheck mismatch. |
-| Web/panel-managed | `runtime.json` на плате | Нет | Пользователь один раз настраивает плату через `/panel`; дальше host только запускает listener. |
+| Web/panel-managed | Зарезервированная внутренняя Flash H7 | Нет | Пользователь один раз настраивает плату через `/panel`; дальше host только запускает listener. |
 | SD-locked | SD `config.json` | Нет | Жестко зафиксированный конфиг на стороне платы. Явно заданные в `config.json` поля locked; конфликтующий REST config отклоняется. |
 
-> SD-карта **опциональна**. Если вы используете EthernetCAN без SD-карты, вы ДОЛЖНЫ использовать host-managed подход: плата будет хранить примененный конфиг в RAM, без самостоятельного сохранения между перезагрузками.
+> SD-карта **опциональна**. Успешное обновление через REST или panel сохраняется между reset во внутренней Flash H7, поэтому board-managed режим работает и без SD-карты.
 
-На SD-карте используются два файла в корне:
+На SD-карте используется один пользовательский файл в корне:
 
 - `config.json`: пользовательский файл. Firmware читает его и никогда не перезаписывает.
-- `runtime.json`: последний успешно примененный полный runtime config. Firmware создает и обновляет его после REST или panel config.
 
-Если `runtime.json` валиден, плата применяет его при boot. Если файла нет, плата пытается собрать runtime config из defaults и locked-полей в `config.json`. Если результата недостаточно, REST и `/panel` все равно стартуют, но FDCAN не применяется до получения конфигурации.
+При boot плата проверяет запись во внутренней Flash: magic, version, size, CRC, допустимость полей и совместимость с locked-полями SD `config.json`. Если совместимой записи нет, firmware пытается собрать полный runtime config из locked-полей SD и defaults и сохранить нормализованный результат во Flash. Если результата недостаточно, REST и `/panel` все равно стартуют, но FDCAN не применяется до получения валидной конфигурации.
 
 Старые host INI и SD INI больше не используются.
 
@@ -155,6 +154,10 @@ Host JSON configs автоматически не устанавливаются
 - `device_ip`: адрес платы, IPv4 или hostname вроде `ethernetcan.local`.
 - `host_interface_map`: карта `bus0`..`bus5` в имена Linux CAN interfaces. Bus включен на host, если он есть в этой карте.
 
+UDP-порты зафиксированы текущим wire protocol: порт приема платы `1555` и порт приема host `1556`. `GET /api/v1/config` их показывает, REST отклоняет попытку изменить, а `/panel` отображает disabled-полями.
+
+32-битное поле wire-формата содержит только логический номер шины в старших 3 битах и 29-битный CAN ID. Бита формата classic CAN/CAN FD в wire-записи нет, поэтому формат определяется настройкой всей шины: записи от платы публикуются в SocketCAN как `can_frame` для classic CAN и как `canfd_frame` для CAN FD. Значение `data_kbit: 0` включает classic CAN mode для всей шины; payload длиннее 8 байт в этом режиме отклоняется в обоих направлениях.
+
 Поля `fdcan`:
 
 - `period_ns`: период интеграции UDP frames в наносекундах. Значение `0` включает immediate flush.
@@ -228,5 +231,5 @@ H7 firmware построен вокруг STM32Cube и lwIP в superloop, без
 - `device_ip` может быть hostname. Host использует обычный Linux `getaddrinfo()`, поэтому mDNS resolution зависит от resolver setup на host, обычно `libnss-mdns`/Avahi.
 - Если `/panel` открывается, но CAN не идет, проверьте `GET /api/v1/status`: `fdcan.config_applied`, bus state, queue drops и SD persistence errors.
 - Если host-managed startup падает с HTTP `409`, значит SD `config.json` содержит locked-поля, конфликтующие с host JSON.
-- Если listener-only startup ждет бесконечно, настройте плату через `/panel` или положите `runtime.json`/locked SD config.
+- Если listener-only startup ждет бесконечно, настройте плату через `/panel` или задайте полный locked SD config, из которого можно создать валидную запись во внутренней Flash.
 - Если кадры приходят по сети, но не видны в `candump`, проверьте `network.host_interface_map`, имена интерфейсов и целевой интерфейс `candump`.

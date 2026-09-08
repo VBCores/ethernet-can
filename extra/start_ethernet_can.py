@@ -212,6 +212,7 @@ def load_board_configs(config_paths: list[Path]) -> tuple[str, list[str], list[d
             "host_ip": config_host_ip,
             "interfaces": interfaces,
             "enabled_buses": enabled_buses,
+            "classic_buses": [False] * BUS_COUNT,
             "managed": "fdcan" in config,
             "period": None,
             "payload": None,
@@ -242,6 +243,10 @@ def load_board_configs(config_paths: list[Path]) -> tuple[str, list[str], list[d
                 fail(f"unsupported fdcan.data_kbit in {config_path}: {data_baud}")
 
             board_config["period"] = period
+            board_config["classic_buses"] = [
+                enabled_buses[bus] and data_baud == 0
+                for bus in range(BUS_COUNT)
+            ]
             board_config["payload"] = {
                 "data_plane": {
                     "host_ip": config_host_ip,
@@ -308,6 +313,16 @@ def board_runtime_compatible(config: dict, actual: dict) -> tuple[bool, str, obj
     if not isinstance(actual, dict):
         return False, "missing config object", None
 
+    data_plane = actual.get("data_plane")
+    if not isinstance(data_plane, dict):
+        return False, "missing data_plane", None
+    if data_plane.get("host_ip") != config["host_ip"]:
+        return False, "data_plane.host_ip mismatch", None
+    if data_plane.get("local_port") != 1555:
+        return False, "data_plane.local_port mismatch", None
+    if data_plane.get("host_port") != 1556:
+        return False, "data_plane.host_port mismatch", None
+
     period = actual.get("frames_integration_period_ns")
     if not isinstance(period, int) or period < 0:
         return False, "invalid frames_integration_period_ns", None
@@ -319,6 +334,11 @@ def board_runtime_compatible(config: dict, actual: dict) -> tuple[bool, str, obj
             return False, f"bus{bus_num} missing", None
         if bool(actual_bus.get("enabled")) != expected_enabled:
             return False, f"bus{bus_num}.enabled mismatch", None
+        if expected_enabled:
+            if actual_bus.get("nominal_kbit") not in VALID_NOMINAL_BAUDS:
+                return False, f"bus{bus_num}.nominal_kbit invalid", None
+            if actual_bus.get("data_kbit") not in VALID_DATA_BAUDS:
+                return False, f"bus{bus_num}.data_kbit invalid", None
 
     return True, "ok", period
 
@@ -359,6 +379,16 @@ def wait_for_board_runtime_config(config: dict, timeout_seconds: float) -> int:
                     actual_config = get_board_config(device_ip)
                     ok, reason, period = board_runtime_compatible(config, actual_config)
                     if ok and period is not None:
+                        actual_buses = {
+                            bus["bus"]: bus
+                            for bus in actual_config["buses"]
+                            if isinstance(bus, dict) and "bus" in bus
+                        }
+                        config["classic_buses"] = [
+                            config["enabled_buses"][bus]
+                            and actual_buses[bus]["data_kbit"] == 0
+                            for bus in range(BUS_COUNT)
+                        ]
                         journal.send(f"  board config ready, period={period} ns")
                         return period
                     reason = f"board config not compatible yet: {reason}"
@@ -384,6 +414,22 @@ def configure_or_wait_for_boards(board_configs: list[dict], timeout_seconds: flo
     for config in board_configs:
         if config["managed"]:
             configure_board_via_rest(config, fail_on_error=True)
+            deadline = None if timeout_seconds < 0 else time.monotonic() + timeout_seconds
+            last_log_at = 0.0
+            last_reason = None
+            while True:
+                ready, reason = healthcheck_board(config)
+                if ready:
+                    journal.send(f"  {config['name']} config applied by board")
+                    break
+                now = time.monotonic()
+                if reason != last_reason or now - last_log_at >= 5.0:
+                    journal.send(f"  waiting for {config['name']} config apply: {reason}")
+                    last_reason = reason
+                    last_log_at = now
+                if deadline is not None and now >= deadline:
+                    fail(f"timed out waiting for applied config on {config['name']} [{config['device_ip']}]")
+                time.sleep(REST_RETRY_DELAY_SECONDS)
         else:
             config["period"] = wait_for_board_runtime_config(config, timeout_seconds)
 
@@ -407,6 +453,8 @@ def build_executable_args(host_ip: str, board_configs: list[dict]) -> list[str]:
         )
         for bus_num, iface in sorted(config["interfaces"].items()):
             cmd.extend([f"--bus{bus_num}", iface])
+            if config["classic_buses"][bus_num]:
+                cmd.append(f"--classic-bus{bus_num}")
 
     return cmd
 
@@ -452,6 +500,9 @@ def healthcheck_board(config: dict) -> tuple[bool, str]:
     except ValueError as exc:
         return False, f"invalid status json: {exc}"
 
+    if status.get("fdcan", {}).get("config_applied") is not True:
+        return False, "board config is not applied"
+
     if config["managed"]:
         try:
             actual_config = get_board_config(device_ip)
@@ -461,9 +512,6 @@ def healthcheck_board(config: dict) -> tuple[bool, str]:
         if not matches:
             return False, reason
         return True, "ok"
-
-    if status.get("fdcan", {}).get("config_applied") is not True:
-        return False, "board config is not applied"
 
     try:
         actual_config = get_board_config(device_ip)

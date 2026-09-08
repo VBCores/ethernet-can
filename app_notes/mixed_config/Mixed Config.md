@@ -5,7 +5,7 @@ Use this scenario when one Linux host service runs boards with different config 
 In this example:
 
 - `ethernetcan-host.local` is host-managed. Its host JSON contains `fdcan`.
-- `ethernetcan-panel.local` is board-managed. Its host JSON has no `fdcan`, so the board must already have an applied `runtime.json`.
+- `ethernetcan-panel.local` is board-managed. Its host JSON has no `fdcan`, so the board must already have an applied internal Flash runtime config.
 
 ## Files
 
@@ -22,7 +22,7 @@ For the board-managed board:
 ## Steps
 
 1. Prepare both boards with their SD configs.
-2. Configure `ethernetcan-panel.local` once through `/panel` so it saves `runtime.json`.
+2. Configure `ethernetcan-panel.local` once through `/panel` so it saves the runtime config in internal H7 Flash.
 3. Install both host JSON files:
 
 ```bash

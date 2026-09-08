@@ -1,5 +1,6 @@
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -33,12 +34,25 @@ constexpr std::size_t kMaxBundledPayloadSize = 512;
 constexpr int kMaxEvents = 32;
 constexpr std::array<std::uint8_t, 4> kHeartbeatPacket {'E', 'H', 'B', '1'};
 
+// Bound log traffic during malformed-packet bursts; never terminate the data plane.
+void log_runtime_drop(const std::string& reason) {
+    static std::uint64_t total = 0;
+    static auto next_log = std::chrono::steady_clock::time_point::min();
+    ++total;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_log) {
+        std::cerr << reason << " (runtime drops=" << total << ")" << std::endl;
+        next_log = now + std::chrono::seconds(1);
+    }
+}
+
 struct BoardConfig {
     std::string name;
     std::string device_ip;
     std::uint64_t integration_period_ns = 0;
     bool has_period = false;
     std::array<bool, kBusCount> enabled_buses {};
+    std::array<bool, kBusCount> classic_buses {};
     std::array<std::string, kBusCount> interface_names {};
 
     std::string label() const {
@@ -225,37 +239,73 @@ public:
     }
 
     void on_udp_packet(const std::uint8_t* data, std::size_t size) {
+        // Validate the entire datagram before forwarding any of its records.
+        if (size > kMaxBundledPayloadSize) {
+            log_runtime_drop("Ignoring oversized UDP datagram from " + config.label());
+            return;
+        }
+        if (size == 0) {
+            log_runtime_drop("Ignoring empty UDP datagram from " + config.label());
+            return;
+        }
         std::size_t index = 0;
         while (index < size) {
             if (size - index < 5) {
-                throw std::runtime_error("truncated UDP frame from " + config.label());
+                log_runtime_drop("Ignoring truncated UDP frame from " + config.label());
+                return;
             }
-
             const std::uint8_t message_length = data[index];
-            if (message_length < 5 || index + message_length > size) {
-                throw std::runtime_error("malformed UDP packet from " + config.label());
+            if (message_length < 5 || message_length > 5 + CANFD_MAX_DLEN ||
+                index + message_length > size) {
+                log_runtime_drop("Ignoring malformed UDP packet from " + config.label());
+                return;
             }
-
+            const auto payload_size = message_length - 5U;
+            if (!(payload_size <= CAN_MAX_DLEN || payload_size == 12 || payload_size == 16 ||
+                  payload_size == 20 || payload_size == 24 || payload_size == 32 ||
+                  payload_size == 48 || payload_size == CANFD_MAX_DLEN)) {
+                log_runtime_drop("Ignoring noncanonical CAN payload size from " + config.label());
+                return;
+            }
             std::uint32_t bus_id = 0;
             std::memcpy(&bus_id, data + index + 1, sizeof(bus_id));
-
             const auto bus = decode_bus_num(bus_id);
             if (bus >= kBusCount || can_fds[bus] < 0) {
-                throw std::runtime_error("packet for disabled bus " + std::to_string(bus) + " from " + config.label());
+                log_runtime_drop("Ignoring packet for disabled/invalid bus " + std::to_string(bus) +
+                                 " from " + config.label());
+                return;
             }
+            if (config.classic_buses[bus] && payload_size > CAN_MAX_DLEN) {
+                log_runtime_drop("Ignoring CAN FD payload for classic bus " + std::to_string(bus) +
+                                 " from " + config.label());
+                return;
+            }
+            index += message_length;
+        }
 
+        index = 0;
+        while (index < size) {
+            const std::uint8_t message_length = data[index];
+            std::uint32_t bus_id = 0;
+            std::memcpy(&bus_id, data + index + 1, sizeof(bus_id));
+            const auto bus = decode_bus_num(bus_id);
             canfd_frame frame {};
             frame.len = static_cast<__u8>(message_length - 5U);
             frame.can_id = decode_can_id(bus_id) | CAN_EFF_FLAG;
-            frame.flags = CANFD_BRS;
+            if (!config.classic_buses[bus]) {
+                frame.flags = CANFD_BRS;
+            }
             std::memcpy(frame.data, data + index + 5, frame.len);
 
-            const auto written = ::write(can_fds[bus], &frame, CANFD_MTU);
-            if (written != CANFD_MTU) {
-                throw std::runtime_error("write(can) failed for " + config.label() + " bus " + std::to_string(bus) +
-                                         ": " + std::strerror(errno));
+            const auto frame_mtu = config.classic_buses[bus] ? CAN_MTU : CANFD_MTU;
+            ssize_t written;
+            do {
+                written = ::write(can_fds[bus], &frame, frame_mtu);
+            } while (written < 0 && errno == EINTR);
+            if (written != frame_mtu) {
+                log_runtime_drop("Dropping CAN frame for " + config.label() + " bus " +
+                                 std::to_string(bus) + ": " + std::strerror(errno));
             }
-
             index += message_length;
         }
     }
@@ -272,10 +322,22 @@ public:
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     break;
                 }
-                throw std::runtime_error("read(can) failed for " + config.label() + ": " + std::strerror(errno));
+                if (errno == EINTR) {
+                    continue;
+                }
+                log_runtime_drop("read(can) failed for " + config.label() + ": " + std::strerror(errno));
+                break;
             }
-            if (bytes_read != CANFD_MTU) {
-                throw std::runtime_error("short CAN read for " + config.label());
+            if (config.classic_buses[bus] && bytes_read == CANFD_MTU) {
+                log_runtime_drop("Ignoring CAN FD frame from classic bus " + std::to_string(bus) +
+                                 " for " + config.label());
+                continue;
+            }
+            if ((bytes_read != CANFD_MTU && bytes_read != CAN_MTU) ||
+                frame.len > (bytes_read == CAN_MTU ? CAN_MAX_DLEN : CANFD_MAX_DLEN) ||
+                (frame.can_id & (CAN_ERR_FLAG | CAN_RTR_FLAG)) != 0) {
+                log_runtime_drop("Ignoring unsupported CAN frame for " + config.label());
+                continue;
             }
 
             if (tx_bundle.size() + frame.len + 5 > kMaxBundledPayloadSize) {
@@ -301,7 +363,10 @@ public:
         }
 
         std::uint64_t expirations = 0;
-        const auto bytes_read = ::read(timer_fd, &expirations, sizeof(expirations));
+        ssize_t bytes_read;
+        do {
+            bytes_read = ::read(timer_fd, &expirations, sizeof(expirations));
+        } while (bytes_read < 0 && errno == EINTR);
         if (bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             throw std::runtime_error("read(timerfd) failed: " + std::string(std::strerror(errno)));
         }
@@ -323,19 +388,15 @@ private:
             return;
         }
 
-        const auto sent = ::sendto(
-            udp_fd,
-            tx_bundle.data(),
-            tx_bundle.size(),
-            0,
-            reinterpret_cast<const sockaddr*>(&remote_addr),
-            sizeof(remote_addr)
-        );
-
+        ssize_t sent;
+        do {
+            sent = ::sendto(udp_fd, tx_bundle.data(), tx_bundle.size(), 0,
+                            reinterpret_cast<const sockaddr*>(&remote_addr), sizeof(remote_addr));
+        } while (sent < 0 && errno == EINTR);
         if (sent != static_cast<ssize_t>(tx_bundle.size())) {
-            throw std::runtime_error("sendto failed for " + config.label() + ": " + std::strerror(errno));
+            log_runtime_drop("Dropping UDP bundle for " + config.label() + ": " + std::strerror(errno));
         }
-
+        // Do not replay stale CAN requests when connectivity returns.
         tx_bundle.clear();
     }
 };
@@ -497,16 +558,48 @@ class HostBridgeApp {
             }
 
             for (int i = 0; i < event_count; ++i) {
-                if ((events[i].events & EPOLLIN) == 0) {
-                    throw std::runtime_error("unsupported epoll event");
-                }
-
                 const auto binding_it = bindings.find(events[i].data.fd);
                 if (binding_it == bindings.end()) {
                     throw std::runtime_error("event for unregistered fd");
                 }
 
                 const auto binding = binding_it->second;
+                const auto event_flags = events[i].events;
+                if ((event_flags & (EPOLLERR | EPOLLHUP)) != 0) {
+                    int socket_error = 0;
+                    socklen_t error_size = sizeof(socket_error);
+                    bool unregister_fd = (event_flags & EPOLLHUP) != 0;
+                    if (::getsockopt(events[i].data.fd, SOL_SOCKET, SO_ERROR,
+                                     &socket_error, &error_size) < 0) {
+                        log_runtime_drop(
+                            "Asynchronous fd event flags=" + std::to_string(event_flags) +
+                            ", SO_ERROR query failed: " + std::strerror(errno)
+                        );
+                        unregister_fd = true;
+                    }
+                    else {
+                        log_runtime_drop(
+                            "Asynchronous fd event flags=" + std::to_string(event_flags) +
+                            ", SO_ERROR=" + std::to_string(socket_error) + " (" +
+                            (socket_error == 0 ? "none" : std::strerror(socket_error)) + ")"
+                        );
+                        if ((event_flags & EPOLLERR) != 0 && socket_error == 0) {
+                            unregister_fd = true;
+                        }
+                    }
+
+                    if (unregister_fd &&
+                        ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, events[i].data.fd, nullptr) < 0 &&
+                        errno != ENOENT) {
+                        log_runtime_drop("epoll_ctl(DEL) failed after asynchronous fd event: " +
+                                         std::string(std::strerror(errno)));
+                    }
+                }
+
+                if ((event_flags & EPOLLIN) == 0) {
+                    continue;
+                }
+
                 if (binding.kind == Kind::Udp) {
                     while (true) {
                         sockaddr_in peer {};
@@ -515,7 +608,7 @@ class HostBridgeApp {
                             udp_fd,
                             udp_buffer.data(),
                             udp_buffer.size(),
-                            0,
+                            MSG_TRUNC,
                             reinterpret_cast<sockaddr*>(&peer),
                             &peer_len
                         );
@@ -524,7 +617,16 @@ class HostBridgeApp {
                             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                                 break;
                             }
-                            throw std::runtime_error("recvfrom failed: " + std::string(std::strerror(errno)));
+                            if (errno == EINTR) {
+                                continue;
+                            }
+                            log_runtime_drop("recvfrom failed: " + std::string(std::strerror(errno)));
+                            break;
+                        }
+
+                        if (static_cast<std::size_t>(bytes) > udp_buffer.size()) {
+                            log_runtime_drop("Ignoring oversized UDP datagram");
+                            continue;
                         }
 
                         char ip_buffer[INET_ADDRSTRLEN] = {};
@@ -540,10 +642,11 @@ class HostBridgeApp {
 
                         if (board_it == boards_by_ip.end()) {
                             if (is_heartbeat_packet(udp_buffer.data(), static_cast<std::size_t>(bytes))) {
-                                std::cerr << "Ignoring heartbeat from unknown device " << ip_buffer << std::endl;
+                                log_runtime_drop("Ignoring heartbeat from unknown device " + std::string(ip_buffer));
                                 continue;
                             }
-                            throw std::runtime_error("UDP packet from unknown device " + std::string(ip_buffer));
+                            log_runtime_drop("Ignoring UDP packet from unknown device " + std::string(ip_buffer));
+                            continue;
                         }
 
                         if (is_heartbeat_packet(udp_buffer.data(), static_cast<std::size_t>(bytes))) {
@@ -628,7 +731,8 @@ int main(int argc, char* argv[]) {
             if (arg == "--help" || arg == "-h") {
                 std::cout << "Usage: " << argv[0]
                           << " --host-ip IP --board NAME --device-ip ADDRESS --period NS "
-                             "[--bus0 IFACE] ... [--bus5 IFACE] [--board NAME ...]"
+                             "[--bus0 IFACE] [--classic-bus0] ... "
+                             "[--bus5 IFACE] [--classic-bus5] [--board NAME ...]"
                           << std::endl;
                 return 0;
             }
@@ -680,6 +784,20 @@ int main(int argc, char* argv[]) {
                 current->enabled_buses[bus] = true;
                 current->interface_names[bus] = require_value(i, arg);
             }
+            else if (
+                arg == "--classic-bus0" ||
+                arg == "--classic-bus1" ||
+                arg == "--classic-bus2" ||
+                arg == "--classic-bus3" ||
+                arg == "--classic-bus4" ||
+                arg == "--classic-bus5"
+            ) {
+                const std::size_t bus = static_cast<std::size_t>(arg[arg.size() - 1] - '0');
+                if (current->classic_buses[bus]) {
+                    throw std::runtime_error("duplicate " + std::string(arg) + " for board " + current->name);
+                }
+                current->classic_buses[bus] = true;
+            }
             else {
                 throw std::runtime_error("unknown argument: " + std::string(arg));
             }
@@ -701,6 +819,13 @@ int main(int argc, char* argv[]) {
             }
             if (!config.has_period) {
                 throw std::runtime_error("board missing --period: " + config.name);
+            }
+            for (std::size_t bus = 0; bus < kBusCount; ++bus) {
+                if (config.classic_buses[bus] && !config.enabled_buses[bus]) {
+                    throw std::runtime_error("--classic-bus" + std::to_string(bus) +
+                                             " requires --bus" + std::to_string(bus) +
+                                             " for board " + config.name);
+                }
             }
         }
 

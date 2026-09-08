@@ -36,7 +36,7 @@ http://ethernetcan-panel.local/panel
 }
 ```
 
-3. Apply it. The board writes `runtime.json`.
+3. Apply it. The board writes one CRC-protected runtime record to reserved internal H7 Flash.
 4. Restart or power-cycle the board and check `GET /api/v1/status`: `fdcan.config_applied` should be `true`.
 
 ## Host Startup
@@ -56,4 +56,4 @@ ETHERNET_CAN_CONFIG_WAIT_TIMEOUT_SECONDS=-1
 
 ## Notes
 
-If the board has no valid `runtime.json`, this mode will not start the host listener until the panel config is applied.
+If the board has no valid internal Flash runtime record, this mode will not start the host listener until the panel config is applied.

@@ -25,7 +25,7 @@ Host JSON содержит:
 - `network.host_interface_map`: SocketCAN interface mapping;
 - `fdcan`: period и CAN-FD bitrates.
 
-Так как секция `fdcan` присутствует, launcher при старте отправляет `PUT /api/v1/config`. Плата применяет config и сохраняет его как `runtime.json`.
+Так как секция `fdcan` присутствует, launcher при старте отправляет `PUT /api/v1/config`. Плата применяет config и сохраняет его в зарезервированной внутренней Flash H7.
 
 ## Шаги
 

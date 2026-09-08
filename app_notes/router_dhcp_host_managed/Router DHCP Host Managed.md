@@ -25,7 +25,7 @@ The host JSON contains:
 - `network.host_interface_map`: SocketCAN interface mapping;
 - `fdcan`: period and CAN-FD bitrates.
 
-Because `fdcan` is present, the launcher sends `PUT /api/v1/config` at startup. The board applies the config and saves it as `runtime.json`.
+Because `fdcan` is present, the launcher sends `PUT /api/v1/config` at startup. The board applies the config and saves it in reserved internal H7 Flash.
 
 ## Steps
 

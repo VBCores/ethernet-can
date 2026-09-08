@@ -15,9 +15,9 @@ The board uses normal IP networking. By default it can get an address from DHCP 
 
 The board exposes:
 
-- `GET /api/v1/status`: network state, FDCAN state, counters, reset/watchdog diagnostics, SD persistence state.
+- `GET /api/v1/status`: network state, FDCAN state, counters, reset/watchdog diagnostics, and persistence state.
 - `GET /api/v1/config`: currently applied runtime config.
-- `PUT /api/v1/config`: apply runtime config and save it as `runtime.json`.
+- `PUT /api/v1/config`: validate and apply runtime config, then save one CRC-protected record in reserved internal H7 Flash.
 - `/panel`: small web control panel for status and config.
 
 CAN data itself uses UDP. HTTP is only the config/status plane.
@@ -41,17 +41,16 @@ Choose one ownership style per board.
 | Style | Where the FDCAN config lives | Host JSON contains `fdcan` | Typical use |
 | --- | --- | --- | --- |
 | Host-managed | Host JSON | Yes | Easiest to edit from Linux/systemd config. The launcher sends REST config on startup and reapplies it on healthcheck mismatch. |
-| Web/panel-managed | Board `runtime.json` | No | User configures the board once through `/panel`; after that the host only starts the listener. |
+| Web/panel-managed | Reserved internal H7 Flash | No | User configures the board once through `/panel`; after that the host only starts the listener. |
 | SD-locked | SD `config.json` | No | Fixed board-owned config. Fields explicitly present in `config.json` are locked; conflicting REST config is rejected. |
 
-> SD card is **optional**. If you run EthernetCAN without an SD card, then you MUST use the host-managed workflow: the board will only save runtime config in RAM.
+> SD card is **optional**. A successful REST or panel update persists across resets in reserved internal H7 Flash, so board-managed operation works without an SD card.
 
-The SD card uses two files in the root directory:
+The SD card uses one user-owned file in the root directory:
 
 - `config.json`: user-owned file. Firmware reads it and never overwrites it.
-- `runtime.json`: last successfully applied full runtime config. Firmware creates and updates it after REST or panel config.
 
-If `runtime.json` is valid, the board applies it at boot. If it is missing, the board tries to build a runtime config from defaults plus locked fields in `config.json`. If the result is incomplete, REST and `/panel` still start, but FDCAN remains unapplied until a config arrives.
+At boot, the board validates the internal Flash record (magic, version, size, CRC, and field values) and checks it against any locked fields in SD `config.json`. If no compatible record exists, it tries to build a complete runtime config from the locked SD fields and defaults and saves that normalized result to Flash. If the result is incomplete, REST and `/panel` still start, but FDCAN remains unapplied until a valid config arrives.
 
 Old host INI and SD INI configs are no longer used.
 
@@ -155,6 +154,10 @@ Each host JSON file describes one board. Top-level keys:
 - `device_ip`: board address, either IPv4 or hostname such as `ethernetcan.local`.
 - `host_interface_map`: maps `bus0`..`bus5` to Linux CAN interface names. A bus is enabled on the host when it is present in this map.
 
+The UDP ports are fixed by the current wire protocol: board receive port `1555` and host receive port `1556`. `GET /api/v1/config` reports them, while REST rejects attempts to change them and `/panel` displays them as disabled fields.
+
+The 32-bit wire field contains only the logical bus number in its top 3 bits and the 29-bit CAN identifier below it. There is no classic-CAN/CAN-FD format bit in the wire record. The configured bus mode supplies that missing context: board-to-host records become SocketCAN `can_frame` values on a classic bus and `canfd_frame` values on a CAN-FD bus. `data_kbit: 0` selects classic CAN mode for the entire bus, so payloads longer than 8 bytes are rejected in both directions.
+
 `fdcan` fields:
 
 - `period_ns`: UDP frame integration period in nanoseconds. Use `0` for immediate flush.
@@ -228,5 +231,5 @@ The default H7 build path is CMake. If using STM32CubeMX, keep user code blocks 
 - `device_ip` may be a hostname. The host uses normal Linux `getaddrinfo()`, so mDNS resolution depends on host resolver setup, usually `libnss-mdns`/Avahi.
 - If `/panel` opens but CAN does not move, check `GET /api/v1/status`: `fdcan.config_applied`, bus state, queue drops, and SD persistence errors.
 - If host-managed startup fails with HTTP `409`, SD `config.json` contains locked fields that conflict with host JSON.
-- If listener-only startup waits forever, configure the board through `/panel` or provide `runtime.json`/locked SD config.
+- If listener-only startup waits forever, configure the board through `/panel` or provide a complete locked SD config so a valid internal Flash record can be created.
 - If frames arrive on the wire but not in `candump`, check `network.host_interface_map`, interface names, and `candump` target.

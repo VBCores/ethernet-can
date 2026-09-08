@@ -11,7 +11,7 @@ SD `config.json` содержит и network identity, и runtime FDCAN fields. 
 
 ## Как это работает
 
-При boot плата читает `config.json`, собирает полный runtime config из locked fields и defaults, применяет его и сохраняет normalized `runtime.json`.
+При boot плата читает `config.json`, собирает полный runtime config из locked fields и defaults, применяет его и сохраняет нормализованную запись во внутренней Flash H7.
 
 В host JSON нет `fdcan`, поэтому launcher не отправляет config. Он ждет board-applied config и запускает data listener.
 
@@ -28,7 +28,7 @@ curl http://ethernetcan-locked.local/api/v1/status
 Ожидаемое состояние:
 
 - `persistence.config_json_present`: `true`
-- `persistence.runtime_json_valid`: `true`
+- `persistence.runtime_flash_valid`: `true`
 - `fdcan.config_applied`: `true`
 
 4. Установите host JSON и перезапустите service:

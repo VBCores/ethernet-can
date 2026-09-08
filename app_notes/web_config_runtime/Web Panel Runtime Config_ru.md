@@ -36,7 +36,7 @@ http://ethernetcan-panel.local/panel
 }
 ```
 
-3. Нажмите Apply. Плата запишет `runtime.json`.
+3. Нажмите Apply. Плата запишет одну runtime-запись с CRC в зарезервированную внутреннюю Flash H7.
 4. Перезагрузите или перепитайте плату и проверьте `GET /api/v1/status`: `fdcan.config_applied` должен быть `true`.
 
 ## Запуск host
@@ -56,4 +56,4 @@ ETHERNET_CAN_CONFIG_WAIT_TIMEOUT_SECONDS=-1
 
 ## Примечания
 
-Если на плате нет валидного `runtime.json`, этот режим не запустит host listener, пока config не будет применен через panel.
+Если во внутренней Flash платы нет валидной runtime-записи, этот режим не запустит host listener, пока config не будет применен через panel.

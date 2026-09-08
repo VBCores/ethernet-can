@@ -5,7 +5,7 @@
 В примере:
 
 - `ethernetcan-host.local` управляется host. Его host JSON содержит `fdcan`.
-- `ethernetcan-panel.local` управляется платой. В его host JSON нет `fdcan`, поэтому на плате уже должен быть applied `runtime.json`.
+- `ethernetcan-panel.local` управляется платой. В его host JSON нет `fdcan`, поэтому на плате уже должен быть applied runtime config во внутренней Flash.
 
 ## Файлы
 
@@ -22,7 +22,7 @@
 ## Шаги
 
 1. Подготовьте обе платы с их SD configs.
-2. Один раз настройте `ethernetcan-panel.local` через `/panel`, чтобы плата сохранила `runtime.json`.
+2. Один раз настройте `ethernetcan-panel.local` через `/panel`, чтобы плата сохранила runtime config во внутренней Flash H7.
 3. Установите оба host JSON:
 
 ```bash

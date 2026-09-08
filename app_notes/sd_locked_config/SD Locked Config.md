@@ -11,7 +11,7 @@ The SD `config.json` contains both network identity and runtime FDCAN fields. Fi
 
 ## How It Works
 
-At boot, the board reads `config.json`, builds a full runtime config from the locked fields and defaults, applies it, and saves normalized `runtime.json`.
+At boot, the board reads `config.json`, builds a full runtime config from the locked fields and defaults, applies it, and saves a normalized record in internal H7 Flash.
 
 The host JSON has no `fdcan`, so the launcher does not send config. It waits for the board-applied config and starts the data listener.
 
@@ -28,7 +28,7 @@ curl http://ethernetcan-locked.local/api/v1/status
 Expected state:
 
 - `persistence.config_json_present`: `true`
-- `persistence.runtime_json_valid`: `true`
+- `persistence.runtime_flash_valid`: `true`
 - `fdcan.config_applied`: `true`
 
 4. Install host JSON and restart the service:
