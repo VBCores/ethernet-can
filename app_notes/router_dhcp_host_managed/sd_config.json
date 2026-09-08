@@ -1,6 +1,0 @@
-{
-  "network": {
-    "hostname": "ethernetcan1.local",
-    "dhcp": true
-  }
-}

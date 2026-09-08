@@ -1,235 +1,76 @@
-# Плата Ethernet-CAN
+# Ethernet-CAN
 
-**[http://vbcores.com/products/ethernet-can](http://vbcores.com/products/ethernet-can)**
+[English](README.md)
 
-![Ethernet-CAN](./extra/images/ethernet-can.png)
+Ethernet-CAN подключает до шести CAN/CAN FD шин к Linux-компьютеру по Ethernet. Клиент на компьютере создаёт интерфейсы SocketCAN: с ними работают `candump`, ROS и другие CAN-приложения.
 
-## Что это за устройство
+Для начала нужны прошитая плата, usb type-c питание, Ethernet-кабель и Linux-компьютер с установленным клиентом. **SD-карта не обязательна.** Плата получает IP автоматически и доступна как `ethernetcan.local`. Настройки CAN сохраняются во внутренней Flash.
 
-Ethernet-CAN - это IP-устройство с шестью логическими CAN-FD шинами. На плате два MCU:
+## Выберите подключение
 
-- STM32H7 отвечает за Ethernet, HTTP REST, веб-панель, SD-конфиг и CAN-шины `0..2`.
-- STM32G4 подключен к H7 по SPI и отвечает за CAN-шины `3..5`.
+| Что хотите сделать | Инструкция | SD |
+| --- | --- | --- |
+| **Первый запуск: компьютер и плата подключены к одному роутеру** | **[Через роутер, без SD](instructions/router_no_sd/README_ru.md)** | Не нужна |
+| Соединить компьютер и плату кабелем, без роутера | [Прямое подключение со статическими IP](instructions/p2p_static/README_ru.md) | Нужна для IP платы |
+| Настраивать CAN в браузере, также без SD | [Через роутер и веб-панель](instructions/web_config_runtime/README_ru.md) | Не нужна |
+| Зафиксировать настройки CAN на карте | [Настройки на SD](instructions/sd_locked_config/README_ru.md) | Нужна |
+| Подключить несколько плат к одному компьютеру | [Несколько плат](instructions/multiple_boards_web_config/README_ru.md) | В этом примере нужна |
+| Одну плату настраивать с компьютера, другую в браузере | [Смешанная настройка](instructions/mixed_config/README_ru.md) | В этом примере нужна |
 
-Плата работает как обычное IP-устройство. По умолчанию она может получить адрес через DHCP и быть доступной по mDNS имени, например `ethernetcan.local`. Если в сети нет DHCP или нужны фиксированные параметры, положите `config.json` на SD-карту и задайте там статический IP, hostname, MAC, netmask, gateway или другие сетевые поля.
+Каждая инструкция ведёт от подключения до проверки CAN. [Установка клиента](instructions/install_ru.md) общая для всех сценариев. Если не знаете, что выбрать, начните с первой строки.
 
-Плата предоставляет:
+[Справочник конфигурации](instructions/reference_ru.md) · [Все инструкции](instructions/README_ru.md)
 
-- `GET /api/v1/status`: сеть, FDCAN, счетчики, reset/watchdog diagnostics и состояние persistence.
-- `GET /api/v1/config`: текущий примененный runtime config.
-- `PUT /api/v1/config`: проверить и применить runtime config, затем сохранить одну запись с CRC в зарезервированной внутренней Flash H7.
-- `/panel`: простая веб-панель статуса и настройки.
+## Плата, питание и подключение CAN
 
-Сами CAN-данные идут по UDP. HTTP используется только для конфигурации и статуса.
+Питание платы — USB Type-C. Ethernet-кабель соединяет плату с LAN-портом роутера или отдельным Ethernet-портом компьютера. Номер физического CAN-разъёма на плате должен совпадать с выбранной шиной: например, bus0 в инструкции соответствует `vcan1.0` на компьютере.
 
-## Модель host service
+Подключайте CANH к CANH, CANL к CANL и общий GND. На двух концах каждой CAN-шины должны быть терминаторы по 120 Ом. На обесточенной шине сопротивление между CANH и CANL должно составлять около 60 Ом; около 120 Ом означает, что одного терминатора не хватает. Если плата находится на конце шины, включите её терминатор предусмотренной на обратной стороне паяной перемычкой; в середине шины дополнительный терминатор не нужен.
 
-Linux host service создает канал данных между платой и SocketCAN. Ему нужны:
+Подключайте проводку и вставляйте SD при выключенном питании, затем включайте плату и CAN-устройства. Проверьте распиновку и расположение перемычек для своей ревизии платы.
 
-- IP адрес хоста;
-- адрес платы, literal IPv4 или hostname;
-- карта bus number -> Linux CAN interface.
+![Ethernet-CAN](extra/images/ethernet-can.png)
 
-Python launcher читает host JSON, готовит VCAN-интерфейсы, при необходимости конфигурирует плату через REST и запускает C++ data-plane процесс. C++ процесс не читает JSON и не конфигурирует плату; он только пересылает UDP CAN frames в SocketCAN и обратно.
+## Что ожидать и что учесть
 
-Host поддерживает несколько плат за одним общим host IP. Для каждой платы нужен отдельный host JSON, а входящие UDP-пакеты различаются по source IP.
+- **Без SD нужен DHCP-сервер**, обычно роутер. Обычный свитч или прямой кабель сам по себе IP не выдаёт. Для прямого подключения в инструкции используются SD и статические IP.
+- По умолчанию имя одной платы — `ethernetcan.local`. Нескольким платам нужны разные адреса; одинаковое имя не позволяет надёжно выбрать нужную плату.
+- `network.host_ip` — IPv4 **Linux-компьютера**, `network.device_ip` — IP или имя **платы**. Закрепите IP компьютера на роутере. В VM нужен адрес самой VM и доступный ей Ethernet-интерфейс.
+- Примеры включают только bus0 и используют CAN FD `1000/8000 kbit/s`, период агрегации 10 мс. Выставьте скорости подключённого устройства. Для classic CAN задайте `data_kbit: 0`. Период агрегации не задаёт частоту сообщений на CAN.
+- После запуска ожидаются служба `active (running)` и `fdcan.config_applied=true`. В `candump` кадры появятся, только если CAN-устройство их передаёт. Открытая панель сама по себе ещё не подтверждает обмен CAN.
+- Настройки CAN сохраняются во Flash и переживают перезапуск без SD. Клиент на компьютере всё равно нужен для обмена через SocketCAN. Без полной конфигурации плата открывает панель, но ждёт настройки CAN.
+- Секция `fdcan` в host JSON означает, что клиент управляет настройками и может перезаписать изменения панели. Для настройки через браузер используйте пример без этой секции.
+- Служба читает все `*.json` непосредственно из `/opt/voltbro/ethernet-can`. Оставляйте один рабочий файл на плату, а резервные копии храните в другом каталоге. Не запускайте одновременно службу и второй ручной клиент.
+- При изменении включённых шин согласуйте `host_interface_map`; после смены classic/FD перезапустите службу. Конфликт с SD-блокировкой даёт `409 Conflict`. После удаления SD и перезапуска блокировки исчезают, а сохранённые настройки CAN остаются.
 
-## Кто владеет FDCAN конфигом
+## Прошивка и устройство
 
-Выберите один стиль для каждой платы.
+H7 обслуживает Ethernet, REST, панель, SD и bus0..2. G4 соединён с ним по SPI и обслуживает bus3..5. Для обновления нужны согласованные прошивки обоих MCU и ST-Link; в прежней процедуре платы для G4 требуется `NSWBoot0=0`. Используйте инструкции к вашей ревизии платы и комплекту прошивок. Исходники прошивки находятся в отдельном репозитории ETH-FDCAN_firmware, а этот репозиторий содержит Linux-клиент.
 
-| Подход | Где живет FDCAN config | В host JSON есть `fdcan` | Когда использовать |
-| --- | --- | --- | --- |
-| Host-managed | Host JSON | Да | Самый простой вариант для правки через Linux/systemd config. Launcher отправляет REST config при старте и переотправляет его при healthcheck mismatch. |
-| Web/panel-managed | Зарезервированная внутренняя Flash H7 | Нет | Пользователь один раз настраивает плату через `/panel`; дальше host только запускает listener. |
-| SD-locked | SD `config.json` | Нет | Жестко зафиксированный конфиг на стороне платы. Явно заданные в `config.json` поля locked; конфликтующий REST config отклоняется. |
+`GET /api/v1/status` показывает состояние; `GET /api/v1/config` — runtime-конфиг; `PUT /api/v1/config` проверяет, сохраняет и применяет его. Панель доступна по `/panel`. Порты UDP фиксированы и не меняются через REST.
 
-> SD-карта **опциональна**. Успешное обновление через REST или panel сохраняется между reset во внутренней Flash H7, поэтому board-managed режим работает и без SD-карты.
+## Troubleshooting — если что-то не работает
 
-На SD-карте используется один пользовательский файл в корне:
-
-- `config.json`: пользовательский файл. Firmware читает его и никогда не перезаписывает.
-
-При boot плата проверяет запись во внутренней Flash: magic, version, size, CRC, допустимость полей и совместимость с locked-полями SD `config.json`. Если совместимой записи нет, firmware пытается собрать полный runtime config из locked-полей SD и defaults и сохранить нормализованный результат во Flash. Если результата недостаточно, REST и `/panel` все равно стартуют, но FDCAN не применяется до получения валидной конфигурации.
-
-Старые host INI и SD INI больше не используются.
-
-## Рекомендуемый первый запуск
-
-Для большинства случаев:
-
-1. Положите на SD минимальный `config.json` с hostname и включенным DHCP.
-2. Дайте роутеру выдать плате IP-адрес.
-3. Используйте hostname платы как `network.device_ip` в host JSON.
-4. Добавьте `fdcan` в host JSON, чтобы host service владел bitrate и period.
-
-Полный пример: [Router DHCP Host Managed](./app_notes/router_dhcp_host_managed/Router%20DHCP%20Host%20Managed_ru.md).
-
-Другие app notes покрывают прямое P2P-соединение со статическим IP, настройку через веб-панель, SD-locked config и несколько плат.
-
-## Hardware
-
-Запаяйте CAN-FD termination jumpers на обратной стороне платы так, как требуется вашей CAN-сети. Без правильной терминации CAN работать не будет.
-
-Перед включением CAN-сети измерьте сопротивление между `CANH` и `CANL`. Должно быть около `60 Ohm`, если в сети стоят два терминатора по `120 Ohm`. Если получилось `120 Ohm`, один терминатор отсутствует.
-
-CAN использует две сигнальные линии, но для стабильной работы также нужен общий ground reference между устройствами. Рекомендуемые цвета: `CANH` желтый, `CANL` зеленый, ground черный.
-
-## Firmware
-
-1. Используйте STM32CubeProgrammer и [ST-Link](https://vbcores.tilda.ws/products/vb-stlink).
-2. Прошейте оба firmware image из release package: H7 и G4.
-3. На G4 выставьте Option Byte `NSWBoot0` в `0` (unchecked в `OB -> Option Bytes`).
-
-H7 firmware всегда запускает network, REST API и `/panel`, даже если FDCAN runtime config еще не доступен.
-
-## SD-карта платы
-
-Отформатируйте SD-карту как FAT и положите JSON-файлы в корень.
-
-Минимальный `config.json`:
-
-```json
-{
-  "network": {
-    "hostname": "ethernetcan.local",
-    "dhcp": true
-  }
-}
-```
-
-Сетевые поля в `config.json`:
-
-- `hostname`: mDNS hostname, можно с `.local` или без.
-- `dhcp`: по умолчанию `true`.
-- `host_ip`: host UDP destination IP для data plane платы.
-- `device_ip`, `netmask`, `gateway`: статическая адресация платы. Если задан `device_ip`, DHCP выключается.
-- `mac_address`: опциональный MAC платы. Если поле не задано, firmware строит locally administered MAC из H7 hardware UID.
-- `wake_on_lan_mac` или `wol_mac`: опциональная Wake-on-LAN цель.
-
-Для locked FDCAN config в `config.json` можно добавить runtime-поля из `GET /api/v1/config`: `data_plane.host_ip`, `frames_integration_period_ns`, `buses`. Каждое явно указанное runtime-поле считается locked.
-
-## Установка host software
-
-Репозиторий рассчитан на сборку и установку на Linux host, который управляет одной или несколькими платами Ethernet-CAN.
-
-Установите инструменты и runtime-компоненты:
+Все команды выполняются на Linux-компьютере клиента. Если mDNS не работает, замените `ethernetcan.local` IP платы из DHCP-списка роутера.
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential cmake libboost-program-options-dev python3 python3-systemd python3-requests python3-tenacity can-utils iproute2 kmod
+getent ahostsv4 ethernetcan.local
+curl --max-time 5 http://ethernetcan.local/api/v1/status
+curl --max-time 5 http://ethernetcan.local/api/v1/config
+systemctl status ethernet-can.service --no-pager
+journalctl -u ethernet-can.service -n 50 --no-pager
+ip -br link
 ```
 
-Склонируйте, соберите и установите:
+| Симптом | Что проверить |
+| --- | --- |
+| Не открывается панель | Питание, Ethernet link, один LAN, DHCP; плата и компьютер не в изолированной гостевой сети |
+| IP работает, имя нет | `avahi-daemon`, `libnss-mdns`, поддержка mDNS в строке `hosts:` файла `/etc/nsswitch.conf`; временно используйте IP |
+| Служба не запускается | Журнал; `host_ip` должен присутствовать на компьютере; один JSON на плату; другой клиент не должен занимать UDP 1556 |
+| `409 Conflict` | SD блокирует поле: согласуйте конфиг с SD либо измените карту и перезапустите плату |
+| Клиент ждёт конфигурацию | Примените настройки в панели; проверьте `fdcan.config_applied`, IP назначения и список шин |
+| `candump` пуст | CAN-устройство должно передавать; проверьте bus0/интерфейс, скорости, питание, общий GND, терминаторы и CAN error counters |
+| REST работает, CAN по Ethernet нет | Межсетевой экран должен пропускать UDP: плата принимает 1555, компьютер 1556; HTTP использует TCP 80; mDNS — UDP 5353 |
+| Без SD есть `mount failed` | Ожидаемо при отсутствии карты; смотрите `runtime_flash_valid` и `fdcan.config_applied` |
 
-```bash
-git clone --recurse-submodules https://github.com/VBCores/ethernet-can
-cd ethernet-can
-cmake -S . -B build
-cmake --build build
-sudo cmake --install build
-```
-
-Установленные файлы:
-
-- `/opt/voltbro/ethernet-can/bin/ethernet-can`
-- `/opt/voltbro/ethernet-can/bin/start_ethernet_can.py`
-- `/opt/voltbro/ethernet-can/systemd/ethernet-can.service`
-- `/opt/voltbro/ethernet-can/systemd/ethernet-can-mdns.conf`
-
-Host JSON configs автоматически не устанавливаются. Положите их в `/opt/voltbro/ethernet-can` или задайте `ETHERNET_CAN_CONFIGS_DIR` в systemd unit.
-
-## Host JSON configuration
-
-Используйте [`extra/configs/example.json`](./extra/configs/example.json) как host-managed template и [`extra/configs/example-board-managed.json`](./extra/configs/example-board-managed.json) как listener-only template.
-
-Каждый host JSON описывает одну плату. Верхний уровень:
-
-- `network`: обязательно.
-- `fdcan`: опционально. Наличие секции означает host-managed FDCAN config.
-
-Поля `network`:
-
-- `host_ip`: IP Linux host для UDP data plane.
-- `device_ip`: адрес платы, IPv4 или hostname вроде `ethernetcan.local`.
-- `host_interface_map`: карта `bus0`..`bus5` в имена Linux CAN interfaces. Bus включен на host, если он есть в этой карте.
-
-UDP-порты зафиксированы текущим wire protocol: порт приема платы `1555` и порт приема host `1556`. `GET /api/v1/config` их показывает, REST отклоняет попытку изменить, а `/panel` отображает disabled-полями.
-
-32-битное поле wire-формата содержит только логический номер шины в старших 3 битах и 29-битный CAN ID. Бита формата classic CAN/CAN FD в wire-записи нет, поэтому формат определяется настройкой всей шины: записи от платы публикуются в SocketCAN как `can_frame` для classic CAN и как `canfd_frame` для CAN FD. Значение `data_kbit: 0` включает classic CAN mode для всей шины; payload длиннее 8 байт в этом режиме отклоняется в обоих направлениях.
-
-Поля `fdcan`:
-
-- `period_ns`: период интеграции UDP frames в наносекундах. Значение `0` включает immediate flush.
-- `nominal_kbit`: nominal bitrate FDCAN.
-- `data_kbit`: data bitrate FDCAN. Значение `0` включает classic CAN mode.
-
-Ручной debug start:
-
-```bash
-sudo /opt/voltbro/ethernet-can/bin/start_ethernet_can.py
-```
-
-Launcher опрашивает `GET /api/v1/status`, пока работает host data plane. В host-managed режиме он сравнивает config платы с ожидаемым JSON и отправляет `PUT /api/v1/config` после повторяющихся mismatch или no-response failures. В listener-only режиме он проверяет, что на плате есть совместимый applied config.
-
-`ETHERNET_CAN_CONFIG_WAIT_TIMEOUT_SECONDS=-1` заставляет listener-only startup ждать board config бесконечно.
-
-## Systemd service
-
-Установите unit после того, как host JSON уже лежит на месте:
-
-```bash
-sudo install -d -m 0755 /etc/systemd/resolved.conf.d
-sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can-mdns.conf /etc/systemd/resolved.conf.d/ethernet-can-mdns.conf
-sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can.service /etc/systemd/system/ethernet-can.service
-sudo systemctl restart systemd-resolved
-sudo systemctl daemon-reload
-sudo systemctl enable --now ethernet-can.service
-```
-
-Проверка логов:
-
-```bash
-systemctl status ethernet-can.service
-journalctl -u ethernet-can.service -f
-```
-
-Host service резолвит `network.device_ip` через Linux resolver. Для `.local` имен держите `MulticastDNS=yes` включенным в `systemd-resolved` и проверяйте резолв так:
-
-```bash
-resolvectl mdns
-getent hosts ethernetcan.local
-```
-
-После старта launcher создает и настраивает интерфейсы из `network.host_interface_map`. Проверить данные можно так:
-
-```bash
-candump vcan1.0
-```
-
-## App notes
-
-Конкретные сценарии лежат в [app_notes](./app_notes):
-
-- DHCP через роутер и host-managed FDCAN config.
-- Прямое point-to-point соединение со статической сетью.
-- Runtime config через веб-панель.
-- SD-locked board config.
-- Несколько плат.
-- Смешанный режим: одна плата host-managed, другая board-managed.
-
-## Build notes для firmware developers
-
-Host software собирается под Linux. Firmware лежит в `STM32H7-ETH-LWIP` и `STM32G4-SPI-CAN`.
-
-H7 firmware построен вокруг STM32Cube и lwIP в superloop, без RTOS. Ethernet и первые три FDCAN-шины живут на H7. Companion G4 конфигурируется H7 по SPI и обслуживает остальные шины. Аккуратно меняйте H7 memory placement, DMA buffers, MPU/cache settings и linker scripts.
-
-Основной путь сборки H7 - CMake. Если используете STM32CubeMX, сохраняйте user code blocks и проверяйте, что custom source files остались в проекте после regeneration.
-
-## Troubleshooting
-
-- `device_ip` может быть hostname. Host использует обычный Linux `getaddrinfo()`, поэтому mDNS resolution зависит от resolver setup на host, обычно `libnss-mdns`/Avahi.
-- Если `/panel` открывается, но CAN не идет, проверьте `GET /api/v1/status`: `fdcan.config_applied`, bus state, queue drops и SD persistence errors.
-- Если host-managed startup падает с HTTP `409`, значит SD `config.json` содержит locked-поля, конфликтующие с host JSON.
-- Если listener-only startup ждет бесконечно, настройте плату через `/panel` или задайте полный locked SD config, из которого можно создать валидную запись во внутренней Flash.
-- Если кадры приходят по сети, но не видны в `candump`, проверьте `network.host_interface_map`, имена интерфейсов и целевой интерфейс `candump`.
+На системах с systemd-resolved вместо Avahi можно использовать поставляемый `extra/ethernet-can-mdns.conf`: установите его в `/etc/systemd/resolved.conf.d/`, перезапустите resolved и проверьте mDNS для нужного интерфейса через `resolvectl mdns`. Для первого запуска достаточно одного работающего способа разрешения имён либо IP платы.
