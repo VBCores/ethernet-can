@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    remove|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            deb-systemd-invoke stop ethernet-can.service
+            systemctl disable ethernet-can.service
+        fi
+        ;;
+    upgrade|failed-upgrade)
+        # Keep the running process until postinst restarts the new version.
+        ;;
+esac

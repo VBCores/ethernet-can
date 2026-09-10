@@ -21,6 +21,21 @@ Each guide takes you from connection to checking CAN. [Client installation](inst
 
 [Configuration reference](instructions/reference.md) · [All instructions](instructions/README.md)
 
+## Install the client
+
+Use the fixed release-candidate tag for evaluation:
+
+```bash
+arch=$(dpkg --print-architecture)
+wget -O ethernet-can-host.deb \
+  "https://github.com/VBCores/ethernet-can/releases/download/v0.3.0-rc.2/ethernet-can-host_${arch}.deb" &&
+sudo apt update &&
+sudo apt install ./ethernet-can-host.deb &&
+rm ethernet-can-host.deb
+```
+
+Ubuntu 22.04/24.04, `amd64` and `arm64`. Configure the board after installation using your chosen guide. [Installation, upgrades and examples without Git](instructions/install.md).
+
 ## Board, power and CAN wiring
 
 Power the board through USB Type-C. Connect Ethernet to a router LAN port or a dedicated computer Ethernet port. Match the physical CAN connector number to the selected bus: for example, bus0 in the guide maps to `vcan1.0` on the computer.

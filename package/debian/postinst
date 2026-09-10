@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    configure)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+            # Never enable or start an inactive service on installation.
+            deb-systemd-invoke try-restart ethernet-can.service
+        fi
+        ;;
+esac
