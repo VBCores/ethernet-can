@@ -3,7 +3,7 @@ ethernet-can
 !build/.gitkeep
 
 # VSCode
-browse.vc.db*
+browse.vc*.db*
 
 ### General
 
