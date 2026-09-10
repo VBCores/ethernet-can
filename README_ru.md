@@ -23,18 +23,13 @@ Ethernet-CAN подключает до шести CAN/CAN FD шин к Linux-к�
 
 ## Установить клиент
 
-Для проверки RC после его публикации используйте фиксированный тег:
+Установка одной строкой (стабильный релиз):
 
 ```bash
-arch=$(dpkg --print-architecture)
-wget -O ethernet-can-host.deb \
-  "https://github.com/VBCores/ethernet-can/releases/download/v0.3.0-rc.2/ethernet-can-host_${arch}.deb" &&
-sudo apt update &&
-sudo apt install ./ethernet-can-host.deb &&
-rm ethernet-can-host.deb
+wget -qO- https://github.com/VBCores/ethernet-can/releases/latest/download/install.sh | bash
 ```
 
-Ubuntu 22.04/24.04, `amd64` и `arm64`. Настройка платы выполняется после установки по выбранной инструкции. [Установка, обновление и примеры без Git](instructions/install_ru.md).
+Ubuntu 22.04/24.04, `amd64` и `arm64`. Скрипт выбирает архитектуру, проверяет SHA-256 и вызывает APT; при необходимости запрашивает пароль sudo. Настройка платы выполняется после установки по выбранной инструкции. [Установка, обновление и примеры без Git](instructions/install_ru.md).
 
 ## Плата, питание и подключение CAN
 

@@ -8,19 +8,31 @@ Packages target Ubuntu 22.04/24.04, amd64 and arm64. Internet access is needed f
 
 ## Package installation
 
-For a stable release:
+For the latest stable release:
 
 ```bash
-arch=$(dpkg --print-architecture)
-case "$arch" in amd64|arm64) ;; *) echo "Unsupported architecture: $arch"; exit 1 ;; esac
-wget -O ethernet-can-host.deb \
-  "https://github.com/VBCores/ethernet-can/releases/latest/download/ethernet-can-host_${arch}.deb" &&
-sudo apt update &&
-sudo apt install ./ethernet-can-host.deb &&
-rm ethernet-can-host.deb
+wget -qO- https://github.com/VBCores/ethernet-can/releases/latest/download/install.sh | bash
 ```
 
-For an RC, replace `latest/download` with `download/v0.3.0-rc.2`, using an existing prerelease tag. RCs do not become `latest`. Links work after the corresponding release is published.
+The script always installs the latest stable package, even when downloaded from
+an older release. To install a specific version, download its `.deb` directly
+from that release and run `sudo apt install ./package-name.deb`.
+The script selects the architecture,
+checks SHA-256, runs `apt update` and `apt install -y`, and removes temporary files
+even on failure. Requires Bash, wget, standard Ubuntu utilities and sudo (or root).
+RCs do not become `latest`; older RCs may not contain the script.
+
+This command executes downloaded code. To inspect it first:
+
+```bash
+wget -O install.sh https://github.com/VBCores/ethernet-can/releases/latest/download/install.sh
+less install.sh
+bash install.sh
+```
+
+In automation, use `set -o pipefail` before the pipeline so a failed script
+download also returns failure. If a VM has an obsolete `file:///cdrom` APT source,
+disable that unavailable source first; the installer does not edit APT sources.
 
 The service is installed but not started on first installation. Follow your connection guide to create a working configuration, then enable the service. To use examples without Git, copy the installed documents into a user-owned directory:
 

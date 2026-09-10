@@ -23,18 +23,13 @@ Each guide takes you from connection to checking CAN. [Client installation](inst
 
 ## Install the client
 
-Use the fixed release-candidate tag for evaluation:
+Install the stable release with one command:
 
 ```bash
-arch=$(dpkg --print-architecture)
-wget -O ethernet-can-host.deb \
-  "https://github.com/VBCores/ethernet-can/releases/download/v0.3.0-rc.2/ethernet-can-host_${arch}.deb" &&
-sudo apt update &&
-sudo apt install ./ethernet-can-host.deb &&
-rm ethernet-can-host.deb
+wget -qO- https://github.com/VBCores/ethernet-can/releases/latest/download/install.sh | bash
 ```
 
-Ubuntu 22.04/24.04, `amd64` and `arm64`. Configure the board after installation using your chosen guide. [Installation, upgrades and examples without Git](instructions/install.md).
+Ubuntu 22.04/24.04, `amd64` and `arm64`. The script selects the architecture, checks SHA-256 and runs APT, requesting your sudo password if needed. Configure the board after installation using your chosen guide. [Installation, upgrades and examples without Git](instructions/install.md).
 
 ## Board, power and CAN wiring
 

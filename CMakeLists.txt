@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ethernet-can VERSION 0.3.0)
+project(ethernet-can VERSION 3.1.0)
 
 include_directories()
 
@@ -21,7 +21,7 @@ install(DIRECTORY instructions DESTINATION /opt/voltbro/ethernet-can/docs)
 install(DIRECTORY extra/ DESTINATION /opt/voltbro/ethernet-can/docs/extra
         PATTERN "__pycache__" EXCLUDE)
 
-set(ETHERCAN_DEB_VERSION "${PROJECT_VERSION}~rc2" CACHE STRING "Debian package version")
+set(ETHERCAN_DEB_VERSION "${PROJECT_VERSION}" CACHE STRING "Debian package version")
 set(CPACK_GENERATOR DEB)
 set(CPACK_PACKAGE_NAME ethernet-can-host)
 set(CPACK_PACKAGE_CONTACT "VBCores")

@@ -1,7 +1,7 @@
 name: Debian release
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', '[0-9]*']
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,24 +21,29 @@ jobs:
       - name: Build dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git build-essential cmake dpkg-dev file
+          apt-get install -y --no-install-recommends ca-certificates git build-essential cmake dpkg-dev file python3
       - uses: actions/checkout@v4
+      - name: Test installer
+        run: |
+          bash -n install.sh
+          python3 tests/test_installer.py
       - name: Build package
         shell: bash
         run: |
           set -euo pipefail
-          version=0.3.0~rc2
+          version_args=()
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            if [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-rc\.([0-9]+))?$ ]]; then
+            if [[ "$GITHUB_REF_NAME" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)(-rc\.([0-9]+))?$ ]]; then
               version="${BASH_REMATCH[1]}"
               if [[ -n "${BASH_REMATCH[3]}" ]]; then version+="~rc${BASH_REMATCH[3]}"; fi
+              version_args=(-DETHERCAN_DEB_VERSION="$version")
             else
-              echo "Expected vX.Y.Z or vX.Y.Z-rc.N" >&2
+              echo "Expected X.Y.Z or X.Y.Z-rc.N (optional v prefix)" >&2
               exit 1
             fi
           fi
           test "$(dpkg --print-architecture)" = "${{ matrix.arch }}"
-          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DETHERCAN_DEB_VERSION="$version"
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release "${version_args[@]}"
           cmake --build build-release -j2
           (cd build-release && cpack -G DEB)
           dpkg-deb --info build-release/ethernet-can-host_${{ matrix.arch }}.deb
@@ -54,11 +59,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: packages
           merge-multiple: true
-      - name: Publish candidate or prepare stable draft
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -66,10 +72,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cp install.sh packages/install.sh
+          bash -n packages/install.sh
           cd packages
-          sha256sum ethernet-can-host_amd64.deb ethernet-can-host_arm64.deb > SHA256SUMS
-          flags=(--draft)
+          sha256sum ethernet-can-host_amd64.deb ethernet-can-host_arm64.deb install.sh > SHA256SUMS
+          flags=(--latest)
           if [[ "$RELEASE_TAG" == *-rc.* ]]; then flags=(--prerelease --latest=false); fi
+          printf -v notes 'Install latest stable:\n```bash\nwget -qO- %s | bash\n```\nThe script always selects the latest stable package for amd64/arm64, verifies its checksum and installs with APT. Ubuntu 22.04 builds; runtime testing uses the existing Ubuntu 24.04 arm64 VM only. Configure the board before first starting ethernet-can.service. No firmware is included.' "https://github.com/$GH_REPO/releases/latest/download/install.sh"
           gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" \
-            --notes "Ubuntu 22.04 build, amd64 + arm64. RC installation is evaluated on the existing Ubuntu 24.04 arm64 VM; other runtime combinations are not yet verified. Download the matching .deb and install with apt install ./FILE.deb. Configure the board before starting ethernet-can.service." \
-            "${flags[@]}" ethernet-can-host_amd64.deb ethernet-can-host_arm64.deb SHA256SUMS
+            --notes "$notes" \
+            "${flags[@]}" ethernet-can-host_amd64.deb ethernet-can-host_arm64.deb install.sh SHA256SUMS

@@ -1,5 +1,19 @@
 # Debian package verification
 
+## 3.1.0 installer preparation (2026-09-10)
+
+- Installer always uses latest stable assets; no fixed tag in install.sh or workflow.
+- Mock installer tests: amd64/arm64, file/pipe execution, unsupported architecture,
+  download failure, checksum mismatch, APT failure, truncated script, temporary cleanup.
+- Existing Ubuntu 24.04 arm64 VM: 11 unit tests PASS (5 installer + 6 launcher).
+- Local Release CPack build: version 3.1.0 PASS. Published packages are built
+  separately on Ubuntu 22.04 CI, not taken from this local build.
+- Workflow runs installer tests for both architectures before publication.
+- The installer does not change JSON, DNS, APT sources, or service policy itself.
+  Package maintainer scripts control upgrade/service behavior.
+
+## Earlier RC verification
+
 2026-09-10: existing Ubuntu 24.04.3 arm64 VM only.
 
 - Local CPack Release build: PASS; automatic shlibdeps verified.

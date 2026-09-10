@@ -8,19 +8,32 @@
 
 ## Установка пакета
 
-Для стабильного релиза:
+Для последнего стабильного релиза:
 
 ```bash
-arch=$(dpkg --print-architecture)
-case "$arch" in amd64|arm64) ;; *) echo "Unsupported architecture: $arch"; exit 1 ;; esac
-wget -O ethernet-can-host.deb \
-  "https://github.com/VBCores/ethernet-can/releases/latest/download/ethernet-can-host_${arch}.deb" &&
-sudo apt update &&
-sudo apt install ./ethernet-can-host.deb &&
-rm ethernet-can-host.deb
+wget -qO- https://github.com/VBCores/ethernet-can/releases/latest/download/install.sh | bash
 ```
 
-Для RC замените `latest/download` на `download/v0.3.0-rc.2` и используйте тег существующего prerelease. RC не попадают в `latest`. Ссылки работают после публикации соответствующего релиза.
+Скрипт всегда устанавливает последний стабильный пакет, даже если скачан из
+старого релиза. Для установки конкретной версии скачайте её `.deb` напрямую
+со страницы релиза и выполните `sudo apt install ./имя-пакета.deb`.
+Скрипт выбирает архитектуру,
+проверяет SHA-256, выполняет `apt update` и `apt install -y`, удаляет временные
+файлы даже при ошибке. Нужны Bash, wget, стандартные утилиты Ubuntu и sudo
+(либо запуск от root). RC не попадают в `latest`; старые RC могут не содержать скрипт.
+
+Команда выполняет скачанный код. Если хотите сначала проверить его:
+
+```bash
+wget -O install.sh https://github.com/VBCores/ethernet-can/releases/latest/download/install.sh
+less install.sh
+bash install.sh
+```
+
+В автоматизации используйте `set -o pipefail` перед командой с pipe, чтобы
+ошибка скачивания скрипта тоже дала ненулевой код завершения. На VM с устаревшим
+APT-источником `file:///cdrom` сначала отключите этот недоступный источник;
+установщик настройки репозиториев APT не меняет.
 
 Служба установлена, но при первой установке не запускается. Создайте рабочую конфигурацию по выбранной инструкции, затем включите службу. Для работы с примерами без Git скопируйте установленные документы в свой каталог:
 
