@@ -21,6 +21,21 @@ Ethernet-CAN подключает до шести CAN/CAN FD шин к Linux-к�
 
 [Справочник конфигурации](instructions/reference_ru.md) · [Все инструкции](instructions/README_ru.md)
 
+## Установить клиент
+
+Для проверки RC после его публикации используйте фиксированный тег:
+
+```bash
+arch=$(dpkg --print-architecture)
+wget -O ethernet-can-host.deb \
+  "https://github.com/VBCores/ethernet-can/releases/download/v0.3.0-rc.2/ethernet-can-host_${arch}.deb" &&
+sudo apt update &&
+sudo apt install ./ethernet-can-host.deb &&
+rm ethernet-can-host.deb
+```
+
+Ubuntu 22.04/24.04, `amd64` и `arm64`. Настройка платы выполняется после установки по выбранной инструкции. [Установка, обновление и примеры без Git](instructions/install_ru.md).
+
 ## Плата, питание и подключение CAN
 
 Питание платы — USB Type-C. Ethernet-кабель соединяет плату с LAN-портом роутера или отдельным Ethernet-портом компьютера. Номер физического CAN-разъёма на плате должен совпадать с выбранной шиной: например, bus0 в инструкции соответствует `vcan1.0` на компьютере.

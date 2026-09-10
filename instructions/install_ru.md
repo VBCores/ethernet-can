@@ -4,35 +4,51 @@
 
 [Выбор подключения](../README_ru.md)
 
-Выполните один раз на компьютере, который будет принимать CAN. Команды рассчитаны на Ubuntu/Debian с systemd. В VM Ethernet-адаптер платы должен быть доступен самой VM; адрес macOS/Windows вместо адреса VM не подойдёт.
+Пакеты предназначены для Ubuntu 22.04/24.04, amd64 и arm64. Интернет нужен для загрузки пакета и зависимостей APT. Проверенный на текущем стенде вариант будет указан в release notes.
 
-1. Установите зависимости:
+## Установка пакета
 
-   ```bash
-   sudo apt update
-   sudo apt install -y git build-essential cmake python3 python3-requests python3-tenacity python3-systemd can-utils iproute2 kmod curl libnss-mdns avahi-daemon
-   sudo systemctl enable --now avahi-daemon
-   ```
+Для стабильного релиза:
 
-2. Скачайте и соберите клиент. Если репозиторий уже скачан, перейдите в его каталог вместо повторного `git clone`.
+```bash
+arch=$(dpkg --print-architecture)
+case "$arch" in amd64|arm64) ;; *) echo "Unsupported architecture: $arch"; exit 1 ;; esac
+wget -O ethernet-can-host.deb \
+  "https://github.com/VBCores/ethernet-can/releases/latest/download/ethernet-can-host_${arch}.deb" &&
+sudo apt update &&
+sudo apt install ./ethernet-can-host.deb &&
+rm ethernet-can-host.deb
+```
 
-   ```bash
-   git clone --recurse-submodules https://github.com/VBCores/ethernet-can
-   cd ethernet-can
-   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-   cmake --build build -j2
-   sudo cmake --install build
-   ```
+Для RC замените `latest/download` на `download/v0.3.0-rc.2` и используйте тег существующего prerelease. RC не попадают в `latest`. Ссылки работают после публикации соответствующего релиза.
 
-3. Установите службу:
+Служба установлена, но при первой установке не запускается. Создайте рабочую конфигурацию по выбранной инструкции, затем включите службу. Для работы с примерами без Git скопируйте установленные документы в свой каталог:
 
-   ```bash
-   sudo install -m 0644 /opt/voltbro/ethernet-can/systemd/ethernet-can.service /etc/systemd/system/ethernet-can.service
-   sudo systemctl daemon-reload
-   ```
+```bash
+setup_dir=$(mktemp -d "$HOME/ethernet-can-setup.XXXXXX")
+cp -R /opt/voltbro/ethernet-can/docs/. "$setup_dir/"
+cd "$setup_dir"
+```
 
-4. Вернитесь к выбранной инструкции и создайте конфигурацию. Запускайте службу после этого.
+Все команды инструкций с путями `instructions/...` выполняйте из этого каталога (или из корня репозитория при сборке из исходников).
 
-Все дальнейшие команды с путями `instructions/...` выполняйте из корня скачанного репозитория. Файлы `host_config.json` — примеры, а рабочий файл одной платы — `/opt/voltbro/ethernet-can/ethernetcan.json`.
+## Обновление и удаление
 
-Служба читает **все `*.json`** непосредственно в `/opt/voltbro/ethernet-can`. Для одной платы оставьте там один рабочий JSON. Старые конфиги и резервные копии перенесите в отдельный каталог; иначе клиент попробует запустить и их. При смене сценария остановите службу, замените конфиг и запустите её снова. Не запускайте одновременно второй ручной клиент.
+Для обновления повторите загрузку и `apt install`. Работающая служба перезапустится; остановленная останется остановленной. Пользовательские JSON сохраняются. Обычный `apt upgrade` не ищет релизы на GitHub.
+
+`sudo apt remove ethernet-can-host` останавливает службу и удаляет пакет; пользовательские JSON остаются. Сетевые настройки и системный DNS пакет не перенастраивает.
+
+Экспериментальный пакет `0.1.0` содержал старые скрипты, отключающие службу при обновлении. При переходе с него заранее запишите состояние службы и после установки восстановите его вручную. Это ограничение старого пакета.
+
+## Сборка из исходников
+
+```bash
+sudo apt update
+sudo apt install -y git build-essential cmake dpkg-dev python3 python3-requests python3-tenacity iproute2 kmod can-utils
+git clone --recurse-submodules https://github.com/VBCores/ethernet-can
+cd ethernet-can
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2
+(cd build && cpack -G DEB)
+sudo apt install ./build/ethernet-can-host_$(dpkg --print-architecture).deb
+```

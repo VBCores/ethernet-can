@@ -1,0 +1,75 @@
+name: Debian release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    steps:
+      - name: Build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git build-essential cmake dpkg-dev file
+      - uses: actions/checkout@v4
+      - name: Build package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=0.3.0~rc2
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-rc\.([0-9]+))?$ ]]; then
+              version="${BASH_REMATCH[1]}"
+              if [[ -n "${BASH_REMATCH[3]}" ]]; then version+="~rc${BASH_REMATCH[3]}"; fi
+            else
+              echo "Expected vX.Y.Z or vX.Y.Z-rc.N" >&2
+              exit 1
+            fi
+          fi
+          test "$(dpkg --print-architecture)" = "${{ matrix.arch }}"
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DETHERCAN_DEB_VERSION="$version"
+          cmake --build build-release -j2
+          (cd build-release && cpack -G DEB)
+          dpkg-deb --info build-release/ethernet-can-host_${{ matrix.arch }}.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: build-release/*.deb
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Publish candidate or prepare stable draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd packages
+          sha256sum ethernet-can-host_amd64.deb ethernet-can-host_arm64.deb > SHA256SUMS
+          flags=(--draft)
+          if [[ "$RELEASE_TAG" == *-rc.* ]]; then flags=(--prerelease --latest=false); fi
+          gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" \
+            --notes "Ubuntu 22.04 build, amd64 + arm64. RC installation is evaluated on the existing Ubuntu 24.04 arm64 VM; other runtime combinations are not yet verified. Download the matching .deb and install with apt install ./FILE.deb. Configure the board before starting ethernet-can.service." \
+            "${flags[@]}" ethernet-can-host_amd64.deb ethernet-can-host_arm64.deb SHA256SUMS
